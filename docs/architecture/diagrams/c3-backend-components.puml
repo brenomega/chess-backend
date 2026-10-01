@@ -1,0 +1,36 @@
+@startuml
+!include <C4/C4_Component>
+LAYOUT_LEFT_RIGHT()
+
+title Projeto Xadrez - C3 Componentes do Backend
+
+Container(frontend, "Frontend", "Godot", "Cliente do jogo")
+Container(ai, "IA", "Worker + motor", "Módulo de decisão")
+ContainerDb(db, "PostgreSQL", "PostgreSQL", "Estado operacional")
+
+Container_Boundary(backend, "Backend - Java 21 + Spring Boot") {
+  Component(session, "Session", "Application/Domain", "Identidade guest e recuperação de sessão.")
+  Component(rest, "REST Adapter", "Spring MVC", "Sessão, lobby e ciclo de vida da partida.")
+  Component(ws, "WebSocket Adapter", "Spring WebSocket", "Ações e eventos da partida ativa.")
+  Component(gameApp, "Game Application", "Application Services", "Orquestra casos de uso e transações.")
+  Component(gameDomain, "Game Domain", "Java", "Agregado Game, participantes, estados, relógio, empate, abandono, invariantes e revisão.")
+  Component(chess, "Chess Engine", "Java puro", "Tabuleiro, movimentos, legalidade, xeque, regras especiais, UCI/FEN e término.")
+  Component(persistence, "Persistence Adapter", "Spring Data JPA", "Mapeia estado operacional para PostgreSQL.")
+  Component(aiGateway, "AI Gateway", "Port + HTTP Adapter", "Cria trabalhos de IA e recebe movimentos candidatos.")
+}
+
+Rel(frontend, rest, "Comandos de lobby/ciclo de vida", "HTTPS/JSON")
+Rel(frontend, ws, "Ações/eventos", "WebSocket")
+Rel(rest, session, "Resolve identidade guest")
+Rel(rest, gameApp, "Invoca casos de uso")
+Rel(ws, session, "Resolve identidade guest")
+Rel(ws, gameApp, "Invoca ações da partida")
+Rel(gameApp, gameDomain, "Coordena transições")
+Rel(gameDomain, chess, "Valida/aplica regras de xadrez")
+Rel(gameApp, persistence, "Carrega/persiste agregado")
+Rel(persistence, db, "JPA/SQL")
+Rel(gameApp, aiGateway, "Registra solicitação / recebe resultado")
+Rel(ai, aiGateway, "Polling de trabalho / entrega de candidato", "HTTP/JSON")
+
+SHOW_LEGEND()
+@enduml
