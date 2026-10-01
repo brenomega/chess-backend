@@ -1,0 +1,13 @@
+@startuml
+!include <C4/C4_Context>
+LAYOUT_LEFT_RIGHT()
+
+title Projeto Xadrez - C1 System Context
+
+Person(player, "Jogador", "Cria, encontra, entra e participa de partidas de xadrez online.")
+System(chess, "Projeto Xadrez", "Sistema online de xadrez com partidas Humano×Humano, Humano×IA e IA×IA.")
+
+Rel(player, chess, "Usa para criar/entrar/jogar partidas", "HTTPS / WebSocket")
+
+SHOW_LEGEND()
+@enduml

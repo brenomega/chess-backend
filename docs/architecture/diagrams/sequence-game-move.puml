@@ -1,0 +1,55 @@
+@startuml
+title Projeto Xadrez - Sequência game.move
+
+autonumber
+actor Jogador
+participant "Frontend" as FE
+participant "WebSocket Adapter" as WS
+participant "Game Application" as APP
+participant "Game Repository Port" as REPO
+participant "Persistence Adapter" as PERSIST
+participant "Game Aggregate" as GAME
+participant "Chess Engine" as CHESS
+database "PostgreSQL" as DB
+participant "Event Publisher Port" as EVENTS
+
+Jogador -> FE: seleciona movimento
+FE -> WS: game.move(gameId, uci, revision)
+WS -> APP: move(identity, gameId, uci, revision)
+APP -> REPO: load(gameId)
+REPO -> PERSIST: load(gameId)
+PERSIST -> DB: SELECT estado operacional
+DB --> PERSIST: estado persistido
+PERSIST --> REPO: Game reidratado
+REPO --> APP: Game
+APP -> GAME: move(identity, uci, revision)
+GAME -> GAME: autorizar participante / validar turno e revisão
+
+alt identidade, turno ou revisão inválidos
+  GAME --> APP: rejeição sem mutação
+  APP --> WS: erro tipado + snapshot/revisão corrente
+  WS --> FE: rejeição
+else validações preliminares aceitas
+  GAME -> CHESS: validar e aplicar movimento
+  alt movimento ilegal
+    CHESS --> GAME: rejeição de legalidade
+    GAME --> APP: rejeição sem mutação
+    APP --> WS: erro tipado + snapshot/revisão corrente
+    WS --> FE: rejeição
+  else movimento legal
+    CHESS --> GAME: nova posição / resultado
+    GAME -> GAME: atualizar histórico UCI, relógio, estado e revisão
+    GAME --> APP: estado + eventos de domínio
+    APP -> REPO: save(Game)
+    REPO -> PERSIST: save(Game)
+    PERSIST -> DB: UPDATE estado operacional
+    DB --> PERSIST: commit
+    PERSIST --> REPO: concluído
+    REPO --> APP: concluído
+    APP -> EVENTS: publicar snapshot/eventos após commit
+    EVENTS --> WS: snapshot/eventos
+    WS --> FE: estado autoritativo
+    FE --> Jogador: renderiza novo estado
+  end
+end
+@enduml
