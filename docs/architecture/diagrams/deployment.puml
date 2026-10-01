@@ -1,0 +1,29 @@
+@startuml
+title Projeto Xadrez - Deployment View
+
+node "Dispositivo do jogador" as client {
+  artifact "Frontend Godot" as frontend
+}
+
+node "Servidor da aplicação" as apphost {
+  node "Container Backend" as backend {
+    artifact "Spring Boot JAR" as jar
+  }
+  node "Container IA" as aicontainer {
+    artifact "Worker + motor IA" as ai
+  }
+}
+
+node "Banco de dados" as dbhost {
+  database "PostgreSQL" as db
+}
+
+frontend --> jar : HTTPS / WebSocket
+jar --> db : SQL/JPA
+ai --> jar : HTTP/JSON\n/next e /result
+
+note bottom of apphost
+Nós são lógicos: Backend, IA e PostgreSQL
+podem ser colocados na mesma máquina.
+end note
+@enduml
