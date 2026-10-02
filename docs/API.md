@@ -15,6 +15,17 @@ O cliente envia JSON em UTF-8. Identificadores são UUIDs, instantes usam ISO-86
 
 `POST /v1/games` cria uma partida em `WAITING` para `HUMAN` ou uma partida ativa com o segundo participante `AI`. `join` só aceita partida `WAITING` e atribui o lado ainda livre. A recuperação de sessão preserva a identidade necessária para consultar e retomar as partidas das quais ela participa.
 
+`GET /v1/games` retorna cada item de `games` neste formato:
+
+```json
+{
+  "gameId": "d7fc48b7-570a-4d8d-a7ae-1bc5d20a9c13",
+  "status": "WAITING",
+  "timeControl": {"initialTimeMs": 600000, "incrementMs": 0},
+  "createdAt": "2026-10-02T15:00:00Z"
+}
+```
+
 ### Snapshot de partida
 
 ```json
@@ -33,11 +44,15 @@ O cliente envia JSON em UTF-8. Identificadores são UUIDs, instantes usam ISO-86
 }
 ```
 
-`status` é `WAITING`, `ACTIVE`, `FINISHED` ou `ABANDONED`. `result`, quando terminal, informa `outcome` e `reason`; exemplos de `reason` são `CHECKMATE`, `STALEMATE`, `DRAW_AGREED`, `RESIGNATION` e `TIMEOUT`.
+`status` é `WAITING`, `ACTIVE`, `FINISHED` ou `ABANDONED`. `position.lastMoveUci` é nulo antes do primeiro movimento. `clock.activeSide` é `WHITE` ou `BLACK` durante uma partida ativa e nulo quando o relógio está parado.
+
+`drawOffer` é nulo quando não há oferta pendente. Quando há, seu formato é `{"offeredBy":"WHITE"}`, com `offeredBy` igual a `WHITE` ou `BLACK`.
+
+`result` é nulo enquanto `status` não é `FINISHED`. Quando a partida termina, seu formato é `{"outcome":"WHITE_WIN","reason":"CHECKMATE"}`. `outcome` é `WHITE_WIN`, `BLACK_WIN` ou `DRAW`; exemplos de `reason` são `CHECKMATE`, `STALEMATE`, `DRAW_AGREED`, `RESIGNATION` e `TIMEOUT`.
 
 ### Erros REST
 
-O corpo de erro é `{"code":"...","message":"...","details":{...}}`. Para conflito de estado, `details` pode incluir `currentRevision` e `snapshot`.
+O corpo de erro é `{"code":"...","message":"...","details":{...}}`. `code` e `message` são strings obrigatórias e não nulas. `details` é um objeto obrigatório, não nulo e vazio quando não há dados adicionais. Para conflito de estado, pode conter `currentRevision` e `snapshot`; quando presentes, ambos são não nulos, e `snapshot` usa integralmente o formato descrito acima.
 
 | Status | Códigos essenciais |
 | --- | --- |

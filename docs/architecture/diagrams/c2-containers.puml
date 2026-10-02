@@ -17,7 +17,7 @@ Rel(player, frontend, "Usa")
 Rel(frontend, backend, "Lobby e ciclo de vida", "HTTPS/JSON")
 Rel(frontend, backend, "Partida ativa e eventos", "WebSocket")
 Rel(backend, db, "Lê/escreve estado operacional", "JPA/SQL")
-Rel(ai, backend, "Busca solicitações e entrega movimentos candidatos", "HTTP/JSON: /next e /result")
+Rel(ai, backend, "Busca solicitações e entrega movimentos candidatos", "HTTP/JSON: /v1/ai/jobs/next e /v1/ai/jobs/result")
 
 SHOW_LEGEND()
 @enduml

@@ -23,6 +23,7 @@ entity game {
   white_remaining_ms : bigint
   black_remaining_ms : bigint
   active_side : varchar?
+  clock_updated_at : timestamptz?
   initial_time_ms : bigint
   increment_ms : bigint
   draw_offer_side : varchar?
@@ -60,7 +61,7 @@ entity ai_move_job {
   completed_at : timestamptz?
 }
 
-guest_session ||--o{ game_participant : participa
+guest_session |o--o{ game_participant : participa
 game ||--|{ game_participant : possui dois lados
 game ||--o{ game_move : mantém sequência UCI
 game ||--o{ ai_move_job : solicita candidato
@@ -69,11 +70,20 @@ note right of game
 position_fen contém posição, lado a jogar,
 direitos de roque, alvo en passant e
 contadores necessários à recuperação.
+
+clock_updated_at é não nulo exatamente quando
+active_side é não nulo. Ele registra o instante em
+que os saldos foram apurados. Em cada persistência
+com relógio ativo, os saldos, active_side e a âncora
+são gravados atomicamente para o mesmo instante.
+Na reidratação, o tempo entre clock_updated_at e o
+instante atual é descontado do lado ativo antes de
+avaliar timeout ou aceitar um comando.
 end note
 
 note left of game_participant
 side é WHITE ou BLACK; kind é HUMAN ou AI.
-session_id é obrigatório somente para HUMAN.
+HUMAN exige session_id; AI exige session_id nulo.
 end note
 
 note bottom of game_move

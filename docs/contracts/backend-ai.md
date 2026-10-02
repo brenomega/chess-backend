@@ -4,9 +4,11 @@ O worker consulta o Backend por HTTP/JSON e fornece apenas um movimento candidat
 
 `jobId` e `gameId` são UUIDs, e a posição é FEN. `revision` é a revisão autoritativa da partida que originou o trabalho.
 
+A versão inicial do contrato é `v1`, identificada no primeiro segmento do caminho após a raiz. Não há negociação por cabeçalho. Mudanças incompatíveis usam uma nova versão de caminho, e Backend e worker não devem fazer fallback automático entre versões. Requisições e respostas com corpo usam `Content-Type: application/json`.
+
 ## Obter trabalho
 
-`POST /next` recebe:
+`POST /v1/ai/jobs/next` recebe:
 
 ```json
 {"workerId":"worker-1"}
@@ -29,7 +31,7 @@ Quando não houver trabalho, responde `204` sem corpo. Um mesmo `jobId` pode ser
 
 ## Entregar candidato
 
-`POST /result` recebe:
+`POST /v1/ai/jobs/result` recebe:
 
 ```json
 {
@@ -51,7 +53,9 @@ O corpo é `{"code":"...","message":"..."}`.
 | --- | --- |
 | `400` | `VALIDATION_ERROR`, `INVALID_CANDIDATE` |
 | `404` | `JOB_NOT_FOUND` |
-| `409` | `JOB_EXPIRED`, `STALE_REVISION`, `JOB_ALREADY_COMPLETED` |
+| `409` | `JOB_EXPIRED`, `STALE_REVISION`, `JOB_ALREADY_COMPLETED`, `WORKER_OWNERSHIP_CONFLICT` |
 | `422` | `ILLEGAL_MOVE`, `INVALID_GAME_STATE` |
+
+`WORKER_OWNERSHIP_CONFLICT` indica que o `jobId` está atribuído a outro `workerId`. A entrega é rejeitada sem alterar o trabalho ou a partida. O worker rejeitado não repete essa entrega: descarta o trabalho local e volta a solicitar trabalho em `/v1/ai/jobs/next`. O worker proprietário ainda pode entregar o resultado enquanto o trabalho estiver válido.
 
 O contrato não especifica algoritmo, profundidade de busca, avaliação, livro de aberturas ou motor utilizado pelo worker.
