@@ -26,7 +26,7 @@ class DatabaseMigrationTest {
                 "--spring.datasource.password=" + postgresql.getPassword())) {
             Flyway flyway = context.getBean(Flyway.class);
 
-            assertEquals("V1__initialize_schema.sql", flyway.info().current().getScript());
+            assertEquals("V2__create_guest_sessions.sql", flyway.info().current().getScript());
         }
     }
 }
