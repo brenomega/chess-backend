@@ -1,0 +1,122 @@
+@startuml
+hide empty members
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+
+title Projeto Xadrez - C4 Code View (núcleo do Backend)
+
+package "game/domain" {
+  class Game <<Aggregate Root>> {
+    - id: GameId
+    - status: GameStatus
+    - revision: long
+    - white: Participant
+    - black: Participant
+    - drawOffer: DrawOffer?
+    - clock: GameClock
+    - position: ChessPosition
+    - moveHistory: List<String> <<UCI>>
+    + move(actor, move, expectedRevision)
+    + resign(actor)
+    + offerDraw(actor)
+    + respondDraw(actor, accepted)
+  }
+
+  class Participant {
+    + identityId
+    + side
+    + kind: HUMAN|AI
+  }
+
+  class GameClock {
+    + remainingWhite
+    + remainingBlack
+    + activeSide
+    + applyElapsed(now)
+    + isTimedOut()
+  }
+
+  class DrawOffer
+  enum GameStatus
+}
+
+package "game/chess" {
+  class ChessPosition {
+    - board: Board
+    - sideToMove: Side
+    - castlingRights
+    - enPassantTarget
+    - halfmoveClock
+    - fullmoveNumber
+    + legalMoves(): List<Move>
+    + apply(move): ChessPosition
+    + toFen(): String
+  }
+
+  class Board {
+    - squares
+    + pieceAt(square): Piece?
+  }
+
+  class Move {
+    + from
+    + to
+    + promotion
+    + toUci(): String
+  }
+
+  class Piece {
+    + side
+    + type
+  }
+
+  class LegalMoveService {
+    + pseudoLegalMoves(position)
+    + legalMoves(position)
+    + isInCheck(position, side)
+  }
+
+  class TerminalStateService {
+    + result(position): ChessResult?
+  }
+
+  enum Side
+  enum PieceType
+  enum ChessResult
+}
+
+package "game/application" {
+  class GameCommandService {
+    + move(gameId, identity, uci, revision)
+    + resign(gameId, identity)
+    + offerDraw(gameId, identity)
+    + respondDraw(gameId, identity, accepted)
+  }
+
+  interface GameRepositoryPort
+  interface GameEventPublisherPort
+  interface AiMovePort
+}
+
+Game "1" *-- "1" ChessPosition
+Game "1" *-- "1" GameClock
+Game "1" *-- "2" Participant
+Game "1" o-- "0..1" DrawOffer
+ChessPosition "1" *-- "1" Board
+Board "1" o-- "0..32" Piece
+LegalMoveService --> ChessPosition
+TerminalStateService --> ChessPosition
+LegalMoveService ..> Move
+GameCommandService --> GameRepositoryPort
+GameCommandService --> Game
+GameCommandService --> GameEventPublisherPort
+GameCommandService --> AiMovePort
+Game --> Move
+
+note right of Game
+C4 nível 4 deliberadamente focado
+no núcleo que concentra invariantes.
+É arquitetura-alvo, não catálogo
+de classes Spring já implementadas.
+end note
+@enduml

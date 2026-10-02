@@ -1,0 +1,23 @@
+@startuml
+!include <C4/C4_Container>
+LAYOUT_LEFT_RIGHT()
+
+title Projeto Xadrez - C2 Containers
+
+Person(player, "Jogador", "Pessoa que usa a aplicação.")
+
+System_Boundary(system, "Projeto Xadrez") {
+  Container(frontend, "Frontend", "Godot / cliente", "Interface para lobby e partida ativa.")
+  Container(backend, "Backend", "Java 21 + Spring Boot", "Autoridade sobre ciclo de vida, regras, relógio, estado e eventos da partida.")
+  Container(ai, "IA", "Worker + motor de xadrez", "Escolhe movimentos candidatos sem possuir o estado autoritativo da partida.")
+  ContainerDb(db, "PostgreSQL", "PostgreSQL", "Persistência do estado necessário à execução e recuperação.")
+}
+
+Rel(player, frontend, "Usa")
+Rel(frontend, backend, "Lobby e ciclo de vida", "HTTPS/JSON")
+Rel(frontend, backend, "Partida ativa e eventos", "WebSocket")
+Rel(backend, db, "Lê/escreve estado operacional", "JPA/SQL")
+Rel(ai, backend, "Busca solicitações e entrega movimentos candidatos", "HTTP/JSON: /next e /result")
+
+SHOW_LEGEND()
+@enduml
