@@ -1,0 +1,98 @@
+@startuml
+hide circle
+skinparam linetype ortho
+
+title Projeto Xadrez - Modelo de Persistência Operacional
+
+entity guest_session {
+  * id : uuid <<PK>>
+  --
+  recovery_token_hash : varchar <<UQ>>
+  expires_at : timestamptz
+  created_at : timestamptz
+  last_seen_at : timestamptz
+}
+
+entity game {
+  * id : uuid <<PK>>
+  --
+  status : varchar
+  revision : bigint
+  position_fen : text
+  last_move_uci : varchar?
+  white_remaining_ms : bigint
+  black_remaining_ms : bigint
+  active_side : varchar?
+  clock_updated_at : timestamptz?
+  initial_time_ms : bigint
+  increment_ms : bigint
+  draw_offer_side : varchar?
+  result_outcome : varchar?
+  result_reason : varchar?
+  created_at : timestamptz
+  updated_at : timestamptz
+  ended_at : timestamptz?
+}
+
+entity game_participant {
+  * game_id : uuid <<PK, FK>>
+  * side : varchar <<PK>>
+  --
+  session_id : uuid <<FK, nullable for AI>>
+  kind : varchar
+}
+
+entity game_move {
+  * game_id : uuid <<PK, FK>>
+  * revision : bigint <<PK>>
+  --
+  uci : varchar
+  played_at : timestamptz
+}
+
+entity ai_move_job {
+  * id : uuid <<PK>>
+  --
+  game_id : uuid <<FK>>
+  revision : bigint <<UQ with game_id>>
+  assigned_worker_id : varchar?
+  status : varchar
+  expires_at : timestamptz
+  completed_at : timestamptz?
+}
+
+guest_session |o--o{ game_participant : participa
+game ||--|{ game_participant : possui dois lados
+game ||--o{ game_move : mantém sequência UCI
+game ||--o{ ai_move_job : solicita candidato
+
+note right of game
+position_fen contém posição, lado a jogar,
+direitos de roque, alvo en passant e
+contadores necessários à recuperação.
+
+clock_updated_at é não nulo exatamente quando
+active_side é não nulo. Ele registra o instante em
+que os saldos foram apurados. Em cada persistência
+com relógio ativo, os saldos, active_side e a âncora
+são gravados atomicamente para o mesmo instante.
+Na reidratação, o tempo entre clock_updated_at e o
+instante atual é descontado do lado ativo antes de
+avaliar timeout ou aceitar um comando.
+end note
+
+note left of game_participant
+side é WHITE ou BLACK; kind é HUMAN ou AI.
+HUMAN exige session_id; AI exige session_id nulo.
+end note
+
+note bottom of game_move
+Sequência necessária para reidratar o agregado.
+Não é exposta como histórico navegável.
+end note
+
+note bottom of ai_move_job
+Trabalho operacional de partida com IA.
+Não contém avaliação nem dados internos do motor.
+end note
+@enduml
