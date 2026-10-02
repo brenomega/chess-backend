@@ -10,7 +10,11 @@ class ChessBackendApplicationTests {
     void applicationStarts() {
         try (ConfigurableApplicationContext context = SpringApplication.run(
                 ChessBackendApplication.class,
-                "--spring.main.web-application-type=none")) {
+                "--spring.main.web-application-type=none",
+                "--spring.flyway.enabled=false",
+                "--spring.autoconfigure.exclude="
+                        + "org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration,"
+                        + "org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration")) {
         }
     }
 }
