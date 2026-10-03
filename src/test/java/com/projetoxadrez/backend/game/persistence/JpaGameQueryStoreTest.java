@@ -23,7 +23,7 @@ class JpaGameQueryStoreTest {
 
     @BeforeEach
     void setUp() {
-        store = new JpaGameQueryStore(null, Clock.fixed(NOW, ZoneOffset.UTC));
+        store = new JpaGameQueryStore(null, new GameSnapshotFactory(Clock.fixed(NOW, ZoneOffset.UTC)));
         game = new GameEntity();
         set("id", UUID.randomUUID());
         set("status", GameStatus.ACTIVE);
