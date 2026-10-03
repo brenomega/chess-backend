@@ -76,6 +76,9 @@ public class GameEntity {
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
+    @Column(name = "updated_at", nullable = false)
+    private Instant updatedAt;
+
     @OneToMany(mappedBy = "game", cascade = CascadeType.ALL)
     @OrderBy("id.side")
     private List<GameParticipantEntity> participants = new ArrayList<>();
@@ -153,5 +156,20 @@ public class GameEntity {
 
     public List<GameParticipantEntity> getParticipants() {
         return participants;
+    }
+
+    void join(UUID sessionId, Instant now) {
+        if (status != GameStatus.WAITING
+                || participants.size() != 1
+                || participants.getFirst().getSide() != Side.WHITE
+                || participants.stream().anyMatch(participant -> sessionId.equals(participant.getSessionId()))) {
+            throw new IllegalStateException("Game is not joinable");
+        }
+        participants.add(new GameParticipantEntity(this, Side.BLACK, sessionId, "HUMAN"));
+        status = GameStatus.ACTIVE;
+        revision++;
+        activeSide = Side.WHITE;
+        clockUpdatedAt = now;
+        updatedAt = now;
     }
 }
