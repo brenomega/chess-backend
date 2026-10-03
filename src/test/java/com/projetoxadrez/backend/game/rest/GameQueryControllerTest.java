@@ -53,7 +53,7 @@ class GameQueryControllerTest {
         sessionId = session.sessionId();
         mockMvc = MockMvcBuilders.standaloneSetup(
                         new GameQueryController(new GameQueryService(gameStore), sessionService))
-                .setControllerAdvice(new GuestSessionExceptionHandler())
+                .setControllerAdvice(new GuestSessionExceptionHandler(), new GameQueryExceptionHandler())
                 .build();
     }
 
@@ -113,9 +113,24 @@ class GameQueryControllerTest {
         gameStore.putSnapshot(gameId, UUID.randomUUID(), snapshot(gameId));
 
         mockMvc.perform(get("/v1/games/{gameId}", gameId).header("X-Session-Token", TOKEN))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("NOT_A_PARTICIPANT"))
+                .andExpect(jsonPath("$.message").value("Not a game participant"))
+                .andExpect(jsonPath("$.details").isEmpty());
         mockMvc.perform(get("/v1/games/{gameId}", UUID.randomUUID()).header("X-Session-Token", TOKEN))
-                .andExpect(status().isNotFound());
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("GAME_NOT_FOUND"))
+                .andExpect(jsonPath("$.message").value("Game not found"))
+                .andExpect(jsonPath("$.details").isEmpty());
+    }
+
+    @Test
+    void rejectsInvalidPaginationWithTheDocumentedErrorContract() throws Exception {
+        mockMvc.perform(get("/v1/games?page=-1&size=101").header("X-Session-Token", TOKEN))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.message").value("Invalid pagination"))
+                .andExpect(jsonPath("$.details").isEmpty());
     }
 
     private static LobbyGame lobbyGame(UUID id, GameStatus status, GameVisibility visibility, Instant createdAt) {

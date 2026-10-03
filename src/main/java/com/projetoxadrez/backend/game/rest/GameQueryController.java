@@ -7,14 +7,12 @@ import com.projetoxadrez.backend.session.application.GuestSessionService;
 import java.util.UUID;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
-import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.server.ResponseStatusException;
 
 @RestController
 @RequestMapping("/v1/games")
@@ -37,7 +35,7 @@ public class GameQueryController {
             @RequestParam(defaultValue = "20") int size) {
         sessionService.recover(recoveryToken);
         if (page < 0 || size < 1 || size > MAX_PAGE_SIZE) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid pagination");
+            throw new InvalidPaginationException();
         }
         return service.lobby(PageRequest.of(
                 page,
@@ -50,12 +48,9 @@ public class GameQueryController {
             @RequestHeader("X-Session-Token") String recoveryToken,
             @PathVariable UUID gameId) {
         UUID sessionId = sessionService.recover(recoveryToken).sessionId();
-        try {
-            return service.game(gameId, sessionId);
-        } catch (GameQueryService.GameNotFoundException exception) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Game not found", exception);
-        } catch (GameQueryService.NotAGameParticipantException exception) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Not a game participant", exception);
-        }
+        return service.game(gameId, sessionId);
+    }
+
+    static final class InvalidPaginationException extends RuntimeException {
     }
 }
