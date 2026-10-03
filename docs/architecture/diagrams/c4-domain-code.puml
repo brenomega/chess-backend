@@ -9,6 +9,8 @@ package "game/domain" {
   class Game <<Aggregate Root>> {
     - id: GameId
     - status: GameStatus
+    - visibility: GameVisibility
+    - entryCode: GameEntryCode?
     - revision: long
     - white: Participant
     - black: Participant
@@ -16,6 +18,7 @@ package "game/domain" {
     - clock: GameClock
     - position: ChessPosition
     - moveHistory: List<String> <<UCI>>
+    + create(visibility): Game
     + move(actor, move, expectedRevision)
     + resign(actor)
     + offerDraw(actor)
@@ -37,7 +40,10 @@ package "game/domain" {
   }
 
   class DrawOffer
+  class GameId
+  class GameEntryCode
   enum GameStatus
+  enum GameVisibility
 }
 
 package "game/chess" {
@@ -102,6 +108,8 @@ Game "1" *-- "1" ChessPosition
 Game "1" *-- "1" GameClock
 Game "1" *-- "2" Participant
 Game "1" o-- "0..1" DrawOffer
+Game "1" *-- "1" GameId
+Game "1" o-- "0..1" GameEntryCode
 ChessPosition "1" *-- "1" Board
 Board "1" o-- "0..32" Piece
 LegalMoveService --> ChessPosition
