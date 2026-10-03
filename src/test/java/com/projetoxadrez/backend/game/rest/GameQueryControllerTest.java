@@ -53,7 +53,10 @@ class GameQueryControllerTest {
         sessionId = session.sessionId();
         mockMvc = MockMvcBuilders.standaloneSetup(
                         new GameQueryController(new GameQueryService(gameStore), sessionService))
-                .setControllerAdvice(new GuestSessionExceptionHandler(), new GameQueryExceptionHandler())
+                .setControllerAdvice(
+                        new GuestSessionExceptionHandler(),
+                        new GameQueryExceptionHandler(),
+                        new GameQueryBindingExceptionHandler())
                 .build();
     }
 
@@ -130,6 +133,24 @@ class GameQueryControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
                 .andExpect(jsonPath("$.message").value("Invalid pagination"))
+                .andExpect(jsonPath("$.details").isEmpty());
+    }
+
+    @Test
+    void rejectsMissingSessionTokenOnLobbyWithTheDocumentedErrorContract() throws Exception {
+        mockMvc.perform(get("/v1/games"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.message").value("Invalid request parameters"))
+                .andExpect(jsonPath("$.details").isEmpty());
+    }
+
+    @Test
+    void rejectsMissingSessionTokenOnGameWithTheDocumentedErrorContract() throws Exception {
+        mockMvc.perform(get("/v1/games/{gameId}", UUID.randomUUID()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.message").value("Invalid request parameters"))
                 .andExpect(jsonPath("$.details").isEmpty());
     }
 

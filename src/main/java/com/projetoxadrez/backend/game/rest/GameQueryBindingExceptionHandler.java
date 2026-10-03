@@ -3,6 +3,7 @@ package com.projetoxadrez.backend.game.rest;
 import java.util.Map;
 
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -14,6 +15,7 @@ final class GameQueryBindingExceptionHandler {
 
     @ExceptionHandler({
             MethodArgumentTypeMismatchException.class,
+            MissingRequestHeaderException.class,
             MissingServletRequestParameterException.class,
             HandlerMethodValidationException.class
     })
