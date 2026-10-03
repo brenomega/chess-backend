@@ -54,6 +54,9 @@ public class GameEntity {
     @Column(name = "active_side")
     private Side activeSide;
 
+    @Column(name = "clock_updated_at")
+    private Instant clockUpdatedAt;
+
     @Column(name = "draw_offer_side")
     @Enumerated(EnumType.STRING)
     private Side drawOfferSide;
@@ -118,6 +121,10 @@ public class GameEntity {
 
     public Side getActiveSide() {
         return activeSide;
+    }
+
+    public Instant getClockUpdatedAt() {
+        return clockUpdatedAt;
     }
 
     public Side getDrawOfferSide() {
