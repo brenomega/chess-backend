@@ -11,6 +11,7 @@ package "game/domain" {
     - status: GameStatus
     - visibility: GameVisibility
     - entryCode: GameEntryCode?
+    - timeControl: TimeControl
     - revision: long
     - white: Participant
     - black: Participant
@@ -18,7 +19,10 @@ package "game/domain" {
     - clock: GameClock
     - position: ChessPosition
     - moveHistory: List<String> <<UCI>>
-    + create(visibility): Game
+    + create(visibility, timeControl): Game
+    + activate()
+    + finish()
+    + abandon()
     + move(actor, move, expectedRevision)
     + resign(actor)
     + offerDraw(actor)
@@ -37,6 +41,12 @@ package "game/domain" {
     + activeSide
     + applyElapsed(now)
     + isTimedOut()
+  }
+
+  class TimeControl {
+    + initialTimeMs
+    + incrementMs
+    + isInfinite()
   }
 
   class DrawOffer
@@ -106,6 +116,7 @@ package "game/application" {
 
 Game "1" *-- "1" ChessPosition
 Game "1" *-- "1" GameClock
+Game "1" *-- "1" TimeControl
 Game "1" *-- "2" Participant
 Game "1" o-- "0..1" DrawOffer
 Game "1" *-- "1" GameId
