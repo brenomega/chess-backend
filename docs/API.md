@@ -8,12 +8,12 @@ O cliente envia JSON em UTF-8. Identificadores são UUIDs, instantes usam ISO-86
 | --- | --- | --- |
 | `POST /v1/sessions` | corpo vazio | `201` com `sessionId`, `recoveryToken` e `expiresAt` |
 | `POST /v1/sessions/recover` | `{"recoveryToken":"..."}` | `200` com `sessionId`, `recoveryToken` e `expiresAt` |
-| `GET /v1/games?status=WAITING` | token de sessão | `200` com `games`, contendo `gameId`, `status`, `timeControl` e `createdAt` |
-| `POST /v1/games` | `{"opponent":"HUMAN|AI","timeControl":{"initialTimeMs":600000,"incrementMs":0}}` | `201` com o snapshot da partida |
+| `GET /v1/games?status=WAITING` | token de sessão | `200` com `games`, contendo `gameId`, `status`, `visibility`, `timeControl` e `createdAt` |
+| `POST /v1/games` | `{"visibility":"PUBLIC|PRIVATE"}` | `201` com o snapshot da partida |
 | `POST /v1/games/{gameId}/join` | token de sessão | `200` com o snapshot da partida ativa |
 | `GET /v1/games/{gameId}` | token de sessão de participante | `200` com o snapshot da partida |
 
-`POST /v1/games` cria uma partida em `WAITING` para `HUMAN` ou uma partida ativa com o segundo participante `AI`. `join` só aceita partida `WAITING` e atribui o lado ainda livre. A recuperação de sessão preserva a identidade necessária para consultar e retomar as partidas das quais ela participa.
+`POST /v1/games` cria uma partida em `WAITING`. Partidas `PUBLIC` são listadas no lobby; partidas `PRIVATE` recebem um `entryCode` para entrada. `join` só aceita partida `WAITING` e atribui o lado ainda livre. A recuperação de sessão preserva a identidade necessária para consultar e retomar as partidas das quais ela participa.
 
 `GET /v1/games` retorna cada item de `games` neste formato:
 
@@ -32,6 +32,8 @@ O cliente envia JSON em UTF-8. Identificadores são UUIDs, instantes usam ISO-86
 {
   "gameId": "d7fc48b7-570a-4d8d-a7ae-1bc5d20a9c13",
   "status": "ACTIVE",
+  "visibility": "PRIVATE",
+  "entryCode": "G7K2XP",
   "revision": 12,
   "players": [
     {"side": "WHITE", "kind": "HUMAN"},
@@ -45,6 +47,8 @@ O cliente envia JSON em UTF-8. Identificadores são UUIDs, instantes usam ISO-86
 ```
 
 `status` é `WAITING`, `ACTIVE`, `FINISHED` ou `ABANDONED`. `position.lastMoveUci` é nulo antes do primeiro movimento. `clock.activeSide` é `WHITE` ou `BLACK` durante uma partida ativa e nulo quando o relógio está parado.
+
+`visibility` é `PUBLIC` ou `PRIVATE`. `entryCode` é um código de seis caracteres em maiúsculas para partidas `PRIVATE` e é nulo para partidas `PUBLIC`.
 
 `drawOffer` é nulo quando não há oferta pendente. Quando há, seu formato é `{"offeredBy":"WHITE"}`, com `offeredBy` igual a `WHITE` ou `BLACK`.
 
