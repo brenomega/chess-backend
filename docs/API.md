@@ -8,7 +8,7 @@ O cliente envia JSON em UTF-8. Identificadores são UUIDs, instantes usam ISO-86
 | --- | --- | --- |
 | `POST /v1/sessions` | corpo vazio | `201` com `sessionId`, `recoveryToken` e `expiresAt` |
 | `POST /v1/sessions/recover` | `{"recoveryToken":"..."}` | `200` com `sessionId`, `recoveryToken` e `expiresAt` |
-| `GET /v1/games?status=WAITING` | token de sessão | `200` com `games`, contendo `gameId`, `status`, `visibility`, `timeControl` e `createdAt` |
+| `GET /v1/games?page=0&size=20` | token de sessão | `200` com página de `games`, contendo `gameId`, `status`, `visibility`, `timeControl` e `createdAt` |
 | `POST /v1/games` | `{"opponent":"HUMAN|AI","visibility":"PUBLIC|PRIVATE","timeControl":{"initialTimeMs":600000,"incrementMs":0}}` | `201` com o snapshot da partida |
 | `POST /v1/games/{gameId}/join` | token de sessão; corpo `{"entryCode":"G7K2XP"}` para partida `PRIVATE` ou vazio para `PUBLIC` | `200` com o snapshot da partida ativa |
 | `GET /v1/games/{gameId}` | token de sessão de participante | `200` com o snapshot da partida |
@@ -17,7 +17,7 @@ O cliente envia JSON em UTF-8. Identificadores são UUIDs, instantes usam ISO-86
 
 `timeControl.initialTimeMs` aceita `180000`, `600000`, `3600000` ou `0`; `0` representa uma partida sem limite de tempo. `timeControl.incrementMs` deve ser `0`.
 
-`GET /v1/games` retorna cada item de `games` neste formato:
+`GET /v1/games` aceita `page` a partir de `0` e `size` de `1` a `100`, com padrão `0` e `20`. Retorna somente partidas `PUBLIC` em `WAITING`, ordenadas por criação decrescente. A resposta inclui `games`, `page`, `size`, `totalElements` e `totalPages`. Cada item de `games` usa este formato:
 
 ```json
 {
