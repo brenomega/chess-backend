@@ -15,6 +15,8 @@ O cliente envia JSON em UTF-8. Identificadores são UUIDs, instantes usam ISO-86
 
 `POST /v1/games` cria uma partida em `WAITING` para `HUMAN` ou uma partida ativa com o segundo participante `AI`. Partidas `PUBLIC` em espera são listadas no lobby; partidas `PRIVATE` em espera recebem um `entryCode` para entrada. `join` só aceita partida `WAITING` e atribui o lado ainda livre. Para uma partida `PRIVATE`, o código é obrigatório e deve coincidir com o `entryCode` da partida; sua ausência retorna `ENTRY_CODE_REQUIRED` e um valor incorreto retorna `INVALID_ENTRY_CODE`. O corpo do `join` de uma partida `PUBLIC` não contém `entryCode`. A recuperação de sessão preserva a identidade necessária para consultar e retomar as partidas das quais ela participa.
 
+`timeControl.initialTimeMs` aceita `180000`, `600000`, `3600000` ou `0`; `0` representa uma partida sem limite de tempo. `timeControl.incrementMs` deve ser `0`.
+
 `GET /v1/games` retorna cada item de `games` neste formato:
 
 ```json
