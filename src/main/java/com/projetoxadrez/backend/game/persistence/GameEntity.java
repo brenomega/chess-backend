@@ -1,6 +1,7 @@
 package com.projetoxadrez.backend.game.persistence;
 
 import com.projetoxadrez.backend.game.chess.Side;
+import com.projetoxadrez.backend.game.domain.Game;
 import com.projetoxadrez.backend.game.domain.GameStatus;
 import com.projetoxadrez.backend.game.domain.GameVisibility;
 import jakarta.persistence.CascadeType;
@@ -75,6 +76,9 @@ public class GameEntity {
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
+
+    @Column(name = "updated_at", nullable = false)
+    private Instant updatedAt;
 
     @OneToMany(mappedBy = "game", cascade = CascadeType.ALL)
     @OrderBy("id.side")
@@ -153,5 +157,22 @@ public class GameEntity {
 
     public List<GameParticipantEntity> getParticipants() {
         return participants;
+    }
+
+    void applyEntryState(Game game) {
+        if (!id.equals(game.id().value())) {
+            throw new IllegalArgumentException("Cannot apply state from another game");
+        }
+        status = game.status();
+        revision = game.revision();
+        activeSide = game.activeSide();
+        clockUpdatedAt = game.clockUpdatedAt();
+        updatedAt = game.clockUpdatedAt();
+        game.participants().stream()
+                .filter(participant -> participants.stream()
+                        .noneMatch(entity -> entity.getSide() == participant.side()))
+                .map(participant -> new GameParticipantEntity(
+                        this, participant.side(), participant.sessionId(), participant.kind()))
+                .forEach(participants::add);
     }
 }

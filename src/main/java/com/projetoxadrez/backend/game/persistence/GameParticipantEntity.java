@@ -34,6 +34,13 @@ public class GameParticipantEntity {
     protected GameParticipantEntity() {
     }
 
+    GameParticipantEntity(GameEntity game, Side side, UUID sessionId, String kind) {
+        this.id = new GameParticipantId(game.getId(), side);
+        this.game = game;
+        this.sessionId = sessionId;
+        this.kind = kind;
+    }
+
     public Side getSide() {
         return id.getSide();
     }

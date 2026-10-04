@@ -19,6 +19,11 @@ public class GameParticipantId implements Serializable {
     protected GameParticipantId() {
     }
 
+    GameParticipantId(UUID gameId, Side side) {
+        this.gameId = Objects.requireNonNull(gameId, "gameId must not be null");
+        this.side = Objects.requireNonNull(side, "side must not be null");
+    }
+
     public UUID getGameId() {
         return gameId;
     }

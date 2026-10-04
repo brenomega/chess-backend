@@ -54,7 +54,7 @@ class JpaGameQueryStoreIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        store = new JpaGameQueryStore(repository, Clock.fixed(NOW, ZoneOffset.UTC));
+        store = new JpaGameQueryStore(repository, new GameSnapshotFactory(Clock.fixed(NOW, ZoneOffset.UTC)));
     }
 
     @Test
