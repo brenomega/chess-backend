@@ -9,8 +9,12 @@ import com.projetoxadrez.backend.game.application.GameEntryService;
 import com.projetoxadrez.backend.game.application.GameEntryStore;
 import com.projetoxadrez.backend.game.application.GameSnapshot;
 import com.projetoxadrez.backend.game.chess.Side;
+import com.projetoxadrez.backend.game.domain.Game;
+import com.projetoxadrez.backend.game.domain.GameEntryCode;
+import com.projetoxadrez.backend.game.domain.GameId;
 import com.projetoxadrez.backend.game.domain.GameStatus;
 import com.projetoxadrez.backend.game.domain.GameVisibility;
+import com.projetoxadrez.backend.game.domain.TimeControl;
 import com.projetoxadrez.backend.session.application.GuestSessionProperties;
 import com.projetoxadrez.backend.session.application.GuestSessionResult;
 import com.projetoxadrez.backend.session.application.GuestSessionService;
@@ -21,6 +25,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -59,7 +64,7 @@ class GameEntryControllerTest {
     @Test
     void joinsAnEligiblePublicGame() throws Exception {
         UUID gameId = UUID.randomUUID();
-        store.putSnapshot(gameId, snapshot(gameId, GameVisibility.PUBLIC, null));
+        store.putGame(waitingGame(gameId, GameVisibility.PUBLIC, null));
 
         mockMvc.perform(post("/v1/games/{gameId}/join", gameId).header("X-Session-Token", TOKEN))
                 .andExpect(status().isOk())
@@ -70,13 +75,14 @@ class GameEntryControllerTest {
                 .andExpect(jsonPath("$.players.length()").value(2))
                 .andExpect(jsonPath("$.clock.activeSide").value("WHITE"));
 
-        assertThat(store.lastJoin()).isEqualTo(new Join(gameId, sessionId, null, NOW));
+        assertThat(store.lastSaved().participants().get(1).sessionId()).isEqualTo(sessionId);
+        assertThat(store.lastSaved().clockUpdatedAt()).isEqualTo(NOW);
     }
 
     @Test
     void joinsPrivateGameWithMatchingCode() throws Exception {
         UUID gameId = UUID.randomUUID();
-        store.putSnapshot(gameId, snapshot(gameId, GameVisibility.PRIVATE, "ABC234"));
+        store.putGame(waitingGame(gameId, GameVisibility.PRIVATE, "ABC234"));
 
         mockMvc.perform(post("/v1/games/{gameId}/join", gameId)
                         .header("X-Session-Token", TOKEN)
@@ -91,8 +97,8 @@ class GameEntryControllerTest {
     void rejectsMissingOrInvalidPrivateCodesWithTheDocumentedErrors() throws Exception {
         UUID missingCodeGameId = UUID.randomUUID();
         UUID invalidCodeGameId = UUID.randomUUID();
-        store.putFailure(missingCodeGameId, new GameEntryService.EntryCodeRequiredException());
-        store.putFailure(invalidCodeGameId, new GameEntryService.InvalidEntryCodeException());
+        store.putGame(waitingGame(missingCodeGameId, GameVisibility.PRIVATE, "ABC234"));
+        store.putGame(waitingGame(invalidCodeGameId, GameVisibility.PRIVATE, "ABC234"));
 
         mockMvc.perform(post("/v1/games/{gameId}/join", missingCodeGameId).header("X-Session-Token", TOKEN))
                 .andExpect(status().isBadRequest())
@@ -110,7 +116,12 @@ class GameEntryControllerTest {
     @Test
     void rejectsGamesThatAreNotJoinableWithTheDocumentedError() throws Exception {
         UUID gameId = UUID.randomUUID();
-        store.putFailure(gameId, new GameEntryService.GameNotJoinableException());
+        store.putGame(game(
+                gameId,
+                GameStatus.ACTIVE,
+                GameVisibility.PUBLIC,
+                null,
+                List.of(new Game.Participant(Side.WHITE, UUID.randomUUID(), "HUMAN"))));
 
         mockMvc.perform(post("/v1/games/{gameId}/join", gameId).header("X-Session-Token", TOKEN))
                 .andExpect(status().isConflict())
@@ -118,54 +129,74 @@ class GameEntryControllerTest {
                 .andExpect(jsonPath("$.details").isEmpty());
     }
 
-    private static GameSnapshot snapshot(UUID gameId, GameVisibility visibility, String entryCode) {
+    private static GameSnapshot snapshot(Game game) {
         return new GameSnapshot(
-                gameId,
-                GameStatus.ACTIVE,
-                visibility,
-                entryCode,
-                1,
-                List.of(
-                        new GameSnapshot.Player(Side.WHITE, "HUMAN"),
-                        new GameSnapshot.Player(Side.BLACK, "HUMAN")),
+                game.id().value(),
+                game.status(),
+                game.visibility(),
+                game.entryCode().map(GameEntryCode::value).orElse(null),
+                game.revision(),
+                game.participants().stream()
+                        .map(participant -> new GameSnapshot.Player(participant.side(), participant.kind()))
+                        .toList(),
                 new GameSnapshot.Position(
                         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
                         Side.WHITE,
                         null),
-                new GameSnapshot.Clock(600_000, 600_000, Side.WHITE),
+                new GameSnapshot.Clock(600_000, 600_000, game.activeSide()),
                 null,
                 null);
     }
 
+    private static Game waitingGame(UUID gameId, GameVisibility visibility, String entryCode) {
+        return game(
+                gameId,
+                GameStatus.WAITING,
+                visibility,
+                entryCode,
+                List.of(new Game.Participant(Side.WHITE, UUID.randomUUID(), "HUMAN")));
+    }
+
+    private static Game game(
+            UUID gameId,
+            GameStatus status,
+            GameVisibility visibility,
+            String entryCode,
+            List<Game.Participant> participants) {
+        return Game.rehydrate(
+                new GameId(gameId),
+                status,
+                visibility,
+                entryCode == null ? null : new GameEntryCode(entryCode),
+                new TimeControl(600_000, 0),
+                0,
+                participants,
+                status == GameStatus.ACTIVE ? Side.WHITE : null,
+                status == GameStatus.ACTIVE ? NOW : null);
+    }
+
     private static final class InMemoryGameEntryStore implements GameEntryStore {
 
-        private final Map<UUID, GameSnapshot> snapshots = new java.util.HashMap<>();
-        private final Map<UUID, RuntimeException> failures = new java.util.HashMap<>();
-        private Join lastJoin;
+        private final Map<UUID, Game> games = new java.util.HashMap<>();
+        private Game lastSaved;
 
-        void putSnapshot(UUID gameId, GameSnapshot snapshot) {
-            snapshots.put(gameId, snapshot);
+        void putGame(Game game) {
+            games.put(game.id().value(), game);
         }
 
-        void putFailure(UUID gameId, RuntimeException exception) {
-            failures.put(gameId, exception);
-        }
-
-        Join lastJoin() {
-            return lastJoin;
+        Game lastSaved() {
+            return lastSaved;
         }
 
         @Override
-        public GameSnapshot join(UUID gameId, UUID sessionId, String entryCode, Instant now) {
-            lastJoin = new Join(gameId, sessionId, entryCode, now);
-            RuntimeException exception = failures.get(gameId);
-            if (exception != null) {
-                throw exception;
-            }
-            return snapshots.get(gameId);
+        public Optional<Game> findById(UUID gameId) {
+            return Optional.ofNullable(games.get(gameId));
         }
-    }
 
-    private record Join(UUID gameId, UUID sessionId, String entryCode, Instant now) {
+        @Override
+        public GameSnapshot save(Game game) {
+            lastSaved = game;
+            return snapshot(game);
+        }
     }
 }

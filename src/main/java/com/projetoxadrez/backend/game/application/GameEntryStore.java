@@ -1,9 +1,12 @@
 package com.projetoxadrez.backend.game.application;
 
-import java.time.Instant;
+import com.projetoxadrez.backend.game.domain.Game;
+import java.util.Optional;
 import java.util.UUID;
 
 public interface GameEntryStore {
 
-    GameSnapshot join(UUID gameId, UUID sessionId, String entryCode, Instant now);
+    Optional<Game> findById(UUID gameId);
+
+    GameSnapshot save(Game game);
 }

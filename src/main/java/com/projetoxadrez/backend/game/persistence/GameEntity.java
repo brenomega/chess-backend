@@ -1,6 +1,7 @@
 package com.projetoxadrez.backend.game.persistence;
 
 import com.projetoxadrez.backend.game.chess.Side;
+import com.projetoxadrez.backend.game.domain.Game;
 import com.projetoxadrez.backend.game.domain.GameStatus;
 import com.projetoxadrez.backend.game.domain.GameVisibility;
 import jakarta.persistence.CascadeType;
@@ -158,18 +159,20 @@ public class GameEntity {
         return participants;
     }
 
-    void join(UUID sessionId, Instant now) {
-        if (status != GameStatus.WAITING
-                || participants.size() != 1
-                || participants.getFirst().getSide() != Side.WHITE
-                || participants.stream().anyMatch(participant -> sessionId.equals(participant.getSessionId()))) {
-            throw new IllegalStateException("Game is not joinable");
+    void applyEntryState(Game game) {
+        if (!id.equals(game.id().value())) {
+            throw new IllegalArgumentException("Cannot apply state from another game");
         }
-        participants.add(new GameParticipantEntity(this, Side.BLACK, sessionId, "HUMAN"));
-        status = GameStatus.ACTIVE;
-        revision++;
-        activeSide = Side.WHITE;
-        clockUpdatedAt = now;
-        updatedAt = now;
+        status = game.status();
+        revision = game.revision();
+        activeSide = game.activeSide();
+        clockUpdatedAt = game.clockUpdatedAt();
+        updatedAt = game.clockUpdatedAt();
+        game.participants().stream()
+                .filter(participant -> participants.stream()
+                        .noneMatch(entity -> entity.getSide() == participant.side()))
+                .map(participant -> new GameParticipantEntity(
+                        this, participant.side(), participant.sessionId(), participant.kind()))
+                .forEach(participants::add);
     }
 }

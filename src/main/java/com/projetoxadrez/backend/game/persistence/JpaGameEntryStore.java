@@ -1,57 +1,53 @@
 package com.projetoxadrez.backend.game.persistence;
 
-import com.projetoxadrez.backend.game.application.GameEntryService;
 import com.projetoxadrez.backend.game.application.GameEntryStore;
 import com.projetoxadrez.backend.game.application.GameSnapshot;
-import com.projetoxadrez.backend.game.domain.GameVisibility;
-import java.time.Instant;
+import com.projetoxadrez.backend.game.domain.Game;
+import com.projetoxadrez.backend.game.domain.GameEntryCode;
+import com.projetoxadrez.backend.game.domain.GameId;
+import com.projetoxadrez.backend.game.domain.TimeControl;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.function.Function;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 @Component
 public class JpaGameEntryStore implements GameEntryStore {
 
-    private final Function<UUID, Optional<GameEntity>> games;
+    private final GameRepository repository;
     private final GameSnapshotFactory snapshotFactory;
 
-    @Autowired
     public JpaGameEntryStore(GameRepository repository, GameSnapshotFactory snapshotFactory) {
-        this(repository::findWithParticipantsById, snapshotFactory);
-    }
-
-    JpaGameEntryStore(Function<UUID, Optional<GameEntity>> games, GameSnapshotFactory snapshotFactory) {
-        this.games = games;
+        this.repository = repository;
         this.snapshotFactory = snapshotFactory;
     }
 
     @Override
-    public GameSnapshot join(UUID gameId, UUID sessionId, String entryCode, Instant now) {
-        GameEntity game = games.apply(gameId)
-                .orElseThrow(GameEntryService.GameNotFoundException::new);
-        validateEntryCode(game, entryCode);
-        try {
-            game.join(sessionId, now);
-        } catch (IllegalStateException exception) {
-            throw new GameEntryService.GameNotJoinableException();
-        }
-        return snapshotFactory.snapshot(game);
+    public Optional<Game> findById(UUID gameId) {
+        return repository.findWithParticipantsById(gameId).map(JpaGameEntryStore::toDomain);
     }
 
-    private static void validateEntryCode(GameEntity game, String entryCode) {
-        if (game.getVisibility() == GameVisibility.PUBLIC) {
-            if (entryCode != null) {
-                throw new GameEntryService.UnexpectedEntryCodeException();
-            }
-            return;
-        }
-        if (entryCode == null || entryCode.isBlank()) {
-            throw new GameEntryService.EntryCodeRequiredException();
-        }
-        if (!entryCode.equals(game.getEntryCode())) {
-            throw new GameEntryService.InvalidEntryCodeException();
-        }
+    @Override
+    public GameSnapshot save(Game game) {
+        GameEntity entity = repository.findWithParticipantsById(game.id().value())
+                .orElseThrow(() -> new IllegalStateException("Game disappeared while joining"));
+        entity.applyEntryState(game);
+        repository.flush();
+        return snapshotFactory.snapshot(entity);
+    }
+
+    private static Game toDomain(GameEntity entity) {
+        return Game.rehydrate(
+                new GameId(entity.getId()),
+                entity.getStatus(),
+                entity.getVisibility(),
+                entity.getEntryCode() == null ? null : new GameEntryCode(entity.getEntryCode()),
+                new TimeControl(entity.getInitialTimeMs(), entity.getIncrementMs()),
+                entity.getRevision(),
+                entity.getParticipants().stream()
+                        .map(participant -> new Game.Participant(
+                                participant.getSide(), participant.getSessionId(), participant.getKind()))
+                        .toList(),
+                entity.getActiveSide(),
+                entity.getClockUpdatedAt());
     }
 }
