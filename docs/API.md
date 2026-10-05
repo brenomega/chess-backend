@@ -55,7 +55,7 @@ O cliente envia JSON em UTF-8. Identificadores são UUIDs, instantes usam ISO-86
 
 `drawOffer` é nulo quando não há oferta pendente. Quando há, seu formato é `{"offeredBy":"WHITE"}`, com `offeredBy` igual a `WHITE` ou `BLACK`.
 
-`result` é nulo enquanto `status` não é `FINISHED`. Quando a partida termina, seu formato é `{"outcome":"WHITE_WIN","reason":"CHECKMATE"}`. `outcome` é `WHITE_WIN`, `BLACK_WIN` ou `DRAW`; exemplos de `reason` são `CHECKMATE`, `STALEMATE`, `DRAW_AGREED`, `RESIGNATION` e `TIMEOUT`.
+`result` é nulo enquanto `status` não é `FINISHED`. Quando a partida termina, seu formato é `{"outcome":"WHITE_WIN","reason":"CHECKMATE"}`. `outcome` é `WHITE_WIN`, `BLACK_WIN` ou `DRAW`; exemplos de `reason` são `CHECKMATE`, `STALEMATE`, `INSUFFICIENT_MATERIAL`, `DRAW_AGREED`, `RESIGNATION` e `TIMEOUT`.
 
 ### Erros REST
 
