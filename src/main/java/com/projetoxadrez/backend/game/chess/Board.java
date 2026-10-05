@@ -61,10 +61,16 @@ public final class Board {
         return squares;
     }
 
-    Board apply(Move move) {
+    Board move(Square from, Square to) {
         Map<Square, Piece> updated = new HashMap<>(squares);
-        Piece piece = updated.remove(move.from());
-        updated.put(move.to(), piece);
+        Piece piece = updated.remove(from);
+        updated.put(to, piece);
+        return new Board(updated);
+    }
+
+    Board replace(Square square, Piece piece) {
+        Map<Square, Piece> updated = new HashMap<>(squares);
+        updated.put(square, piece);
         return new Board(updated);
     }
 
