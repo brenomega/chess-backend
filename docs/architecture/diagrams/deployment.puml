@@ -20,7 +20,7 @@ node "Banco de dados" as dbhost {
 
 frontend --> jar : HTTPS / WebSocket
 jar --> db : SQL/JPA
-ai --> jar : HTTP/JSON\n/next e /result
+ai --> jar : HTTP/JSON\n/v1/ai/jobs/next e /v1/ai/jobs/result
 
 note bottom of apphost
 Nós são lógicos: Backend, IA e PostgreSQL

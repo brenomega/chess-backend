@@ -9,6 +9,9 @@ package "game/domain" {
   class Game <<Aggregate Root>> {
     - id: GameId
     - status: GameStatus
+    - visibility: GameVisibility
+    - entryCode: GameEntryCode?
+    - timeControl: TimeControl
     - revision: long
     - white: Participant
     - black: Participant
@@ -16,6 +19,10 @@ package "game/domain" {
     - clock: GameClock
     - position: ChessPosition
     - moveHistory: List<String> <<UCI>>
+    + create(visibility, timeControl, creatorSessionId): Game
+    + activate()
+    + finish()
+    + abandon()
     + move(actor, move, expectedRevision)
     + resign(actor)
     + offerDraw(actor)
@@ -36,8 +43,17 @@ package "game/domain" {
     + isTimedOut()
   }
 
+  class TimeControl {
+    + initialTimeMs
+    + incrementMs
+    + isInfinite()
+  }
+
   class DrawOffer
+  class GameId
+  class GameEntryCode
   enum GameStatus
+  enum GameVisibility
 }
 
 package "game/chess" {
@@ -100,8 +116,11 @@ package "game/application" {
 
 Game "1" *-- "1" ChessPosition
 Game "1" *-- "1" GameClock
-Game "1" *-- "2" Participant
+Game "1" *-- "1" TimeControl
+Game "1" *-- "1..2" Participant
 Game "1" o-- "0..1" DrawOffer
+Game "1" *-- "1" GameId
+Game "1" o-- "0..1" GameEntryCode
 ChessPosition "1" *-- "1" Board
 Board "1" o-- "0..32" Piece
 LegalMoveService --> ChessPosition
