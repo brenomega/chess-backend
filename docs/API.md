@@ -9,11 +9,11 @@ O cliente envia JSON em UTF-8. Identificadores são UUIDs, instantes usam ISO-86
 | `POST /v1/sessions` | corpo vazio | `201` com `sessionId`, `recoveryToken` e `expiresAt` |
 | `POST /v1/sessions/recover` | `{"recoveryToken":"..."}` | `200` com `sessionId`, `recoveryToken` e `expiresAt` |
 | `GET /v1/games?page=0&size=20` | token de sessão | `200` com página de `games`, contendo `gameId`, `status`, `visibility`, `timeControl` e `createdAt` |
-| `POST /v1/games` | `{"opponent":"HUMAN|AI","visibility":"PUBLIC|PRIVATE","timeControl":{"initialTimeMs":600000,"incrementMs":0}}` | `201` com o snapshot da partida |
+| `POST /v1/games` | token de sessão; `{"visibility":"PUBLIC|PRIVATE","timeControl":{"initialTimeMs":600000,"incrementMs":0}}` | `201` com o snapshot da partida em espera |
 | `POST /v1/games/{gameId}/join` | token de sessão; corpo `{"entryCode":"G7K2XP"}` para partida `PRIVATE` ou vazio para `PUBLIC` | `200` com o snapshot da partida ativa |
 | `GET /v1/games/{gameId}` | token de sessão de participante | `200` com o snapshot da partida |
 
-`POST /v1/games` cria uma partida em `WAITING` para `HUMAN` ou uma partida ativa com o segundo participante `AI`. Partidas `PUBLIC` em espera são listadas no lobby; partidas `PRIVATE` em espera recebem um `entryCode` para entrada. `join` só aceita partida `WAITING` e atribui o lado ainda livre. Para uma partida `PRIVATE`, o código é obrigatório e deve coincidir com o `entryCode` da partida; sua ausência retorna `ENTRY_CODE_REQUIRED` e um valor incorreto retorna `INVALID_ENTRY_CODE`. O corpo do `join` de uma partida `PUBLIC` não contém `entryCode`. A recuperação de sessão preserva a identidade necessária para consultar e retomar as partidas das quais ela participa.
+`POST /v1/games` cria uma partida humano contra humano em `WAITING` e associa a sessão criadora como `WHITE` e `HUMAN`. Partidas `PUBLIC` não têm `entryCode` e são listadas no lobby enquanto aguardam o segundo jogador. Partidas `PRIVATE` não aparecem no lobby e recebem um `entryCode` opaco de seis caracteres para compartilhamento externo. `join` só aceita partida `WAITING` e atribui `BLACK` ao segundo guest. Para uma partida `PRIVATE`, o código é obrigatório e deve coincidir com o `entryCode` da partida; sua ausência retorna `ENTRY_CODE_REQUIRED` e um valor incorreto retorna `INVALID_ENTRY_CODE`. O corpo do `join` de uma partida `PUBLIC` não contém `entryCode`. A recuperação de sessão preserva a identidade necessária para consultar e retomar as partidas das quais ela participa.
 
 `timeControl.initialTimeMs` aceita `180000`, `600000`, `3600000` ou `0`; `0` representa uma partida sem limite de tempo. `timeControl.incrementMs` deve ser `0`.
 
@@ -40,7 +40,7 @@ O cliente envia JSON em UTF-8. Identificadores são UUIDs, instantes usam ISO-86
   "revision": 12,
   "players": [
     {"side": "WHITE", "kind": "HUMAN"},
-    {"side": "BLACK", "kind": "AI"}
+    {"side": "BLACK", "kind": "HUMAN"}
   ],
   "position": {"fen": "...", "sideToMove": "WHITE", "lastMoveUci": "e7e5"},
   "clock": {"whiteRemainingMs": 598321, "blackRemainingMs": 599004, "activeSide": "WHITE"},
