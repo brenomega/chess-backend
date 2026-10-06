@@ -15,4 +15,11 @@ public interface GameRepository extends JpaRepository<GameEntity, UUID> {
 
     @EntityGraph(attributePaths = "participants")
     Optional<GameEntity> findWithParticipantsById(UUID id);
+
+    boolean existsByEntryCodeAndStatusAndVisibility(
+            String entryCode, GameStatus status, GameVisibility visibility);
+
+    @EntityGraph(attributePaths = "participants")
+    Optional<GameEntity> findByEntryCodeAndStatusAndVisibility(
+            String entryCode, GameStatus status, GameVisibility visibility);
 }

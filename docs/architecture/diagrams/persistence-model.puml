@@ -18,7 +18,7 @@ entity game {
   --
   status : varchar
   visibility : varchar
-  entry_code : varchar?
+  entry_code : varchar? <<UQ while PRIVATE WAITING>>
   revision : bigint
   position_fen : text
   last_move_uci : varchar?
@@ -71,6 +71,7 @@ game ||--o{ ai_move_job : solicita candidato
 note right of game
 visibility é PUBLIC ou PRIVATE. Partidas PRIVATE
 exigem entry_code; partidas PUBLIC não o possuem.
+entry_code é único entre partidas PRIVATE em WAITING.
 
 position_fen contém posição, lado a jogar,
 direitos de roque, alvo en passant e

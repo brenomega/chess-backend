@@ -5,5 +5,7 @@ import java.time.Instant;
 
 public interface GameCreationStore {
 
+    boolean existsPrivateWaitingByEntryCode(String entryCode);
+
     GameSnapshot create(Game game, Instant createdAt);
 }

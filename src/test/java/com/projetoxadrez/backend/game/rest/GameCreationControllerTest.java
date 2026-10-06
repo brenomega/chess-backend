@@ -20,6 +20,8 @@ import com.projetoxadrez.backend.session.rest.GuestSessionExceptionHandler;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayDeque;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
@@ -34,10 +36,13 @@ class GameCreationControllerTest {
     private InMemoryGameCreationStore store;
     private MockMvc mockMvc;
     private GuestSessionResult session;
+    private ArrayDeque<GameEntryCode> generatedCodes;
 
     @BeforeEach
     void setUp() {
         store = new InMemoryGameCreationStore();
+        generatedCodes = new ArrayDeque<>();
+        generatedCodes.add(new GameEntryCode("ABC234"));
         GuestSessionService sessionService = new GuestSessionService(
                 new InMemoryGuestSessionStore(),
                 () -> TOKEN,
@@ -45,7 +50,11 @@ class GameCreationControllerTest {
                 Clock.fixed(NOW, ZoneOffset.UTC));
         session = sessionService.create();
         mockMvc = MockMvcBuilders.standaloneSetup(new GameCreationController(
-                        new GameCreationService(store, Clock.fixed(NOW, ZoneOffset.UTC)), sessionService))
+                        new GameCreationService(
+                                store,
+                                generatedCodes::removeFirst,
+                                Clock.fixed(NOW, ZoneOffset.UTC)),
+                        sessionService))
                 .setControllerAdvice(
                         new GuestSessionExceptionHandler(),
                         new GameQueryExceptionHandler(),
@@ -99,6 +108,24 @@ class GameCreationControllerTest {
     }
 
     @Test
+    void generatesAnotherPrivateCodeWhenTheFirstOneIsAlreadyWaiting() throws Exception {
+        store.existingEntryCodes.add("ABC234");
+        generatedCodes.add(new GameEntryCode("DEF567"));
+
+        mockMvc.perform(post("/v1/games")
+                        .header("X-Session-Token", TOKEN)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "visibility":"PRIVATE",
+                                  "timeControl":{"initialTimeMs":180000,"incrementMs":0}
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.entryCode").value("DEF567"));
+    }
+
+    @Test
     void requiresAValidGuestSession() throws Exception {
         mockMvc.perform(post("/v1/games")
                         .header("X-Session-Token", "invalid")
@@ -147,6 +174,12 @@ class GameCreationControllerTest {
 
         private Game createdGame;
         private Instant createdAt;
+        private final Set<String> existingEntryCodes = new java.util.HashSet<>();
+
+        @Override
+        public boolean existsPrivateWaitingByEntryCode(String entryCode) {
+            return existingEntryCodes.contains(entryCode);
+        }
 
         @Override
         public GameSnapshot create(Game game, Instant instant) {
