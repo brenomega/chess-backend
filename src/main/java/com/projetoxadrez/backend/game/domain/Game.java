@@ -50,9 +50,10 @@ public final class Game {
         this.clockUpdatedAt = clockUpdatedAt;
     }
 
-    public static Game create(GameVisibility visibility, TimeControl timeControl) {
+    public static Game create(GameVisibility visibility, TimeControl timeControl, UUID creatorSessionId) {
         Objects.requireNonNull(visibility, "visibility must not be null");
         Objects.requireNonNull(timeControl, "timeControl must not be null");
+        Objects.requireNonNull(creatorSessionId, "creatorSessionId must not be null");
         GameEntryCode entryCode = visibility == GameVisibility.PRIVATE ? GameEntryCode.newCode() : null;
         return new Game(
                 GameId.newId(),
@@ -61,7 +62,7 @@ public final class Game {
                 entryCode,
                 timeControl,
                 0,
-                List.of(),
+                List.of(new Participant(Side.WHITE, creatorSessionId, "HUMAN")),
                 null,
                 null);
     }

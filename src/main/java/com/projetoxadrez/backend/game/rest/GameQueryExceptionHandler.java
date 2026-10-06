@@ -2,6 +2,7 @@ package com.projetoxadrez.backend.game.rest;
 
 import com.projetoxadrez.backend.game.application.GameQueryService;
 import com.projetoxadrez.backend.game.application.GameEntryService;
+import com.projetoxadrez.backend.game.application.GameCreationService;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -10,6 +11,11 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 @RestControllerAdvice
 public class GameQueryExceptionHandler {
+
+    @ExceptionHandler(GameCreationService.InvalidGameCreationException.class)
+    public ResponseEntity<GameErrorResponse> invalidGameCreation() {
+        return response(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "Invalid game creation request");
+    }
 
     @ExceptionHandler(GameQueryController.InvalidPaginationException.class)
     public ResponseEntity<GameErrorResponse> invalidPagination() {

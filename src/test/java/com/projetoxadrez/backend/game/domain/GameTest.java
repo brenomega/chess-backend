@@ -15,21 +15,24 @@ class GameTest {
 
     private static final TimeControl TEN_MINUTES = new TimeControl(600_000, 0);
     private static final Instant NOW = Instant.parse("2026-10-03T15:00:00Z");
+    private static final UUID CREATOR_SESSION_ID = UUID.fromString("00000000-0000-0000-0000-000000000001");
 
     @Test
     void createsPublicGameWithIdentifierConfigurationAndWaitingState() {
-        Game game = Game.create(GameVisibility.PUBLIC, TEN_MINUTES);
+        Game game = Game.create(GameVisibility.PUBLIC, TEN_MINUTES, CREATOR_SESSION_ID);
 
         assertThat(game.id().value()).isNotNull();
         assertThat(game.status()).isEqualTo(GameStatus.WAITING);
         assertThat(game.visibility()).isEqualTo(GameVisibility.PUBLIC);
         assertThat(game.entryCode()).isEmpty();
         assertThat(game.timeControl()).isEqualTo(TEN_MINUTES);
+        assertThat(game.participants()).containsExactly(
+                new Game.Participant(Side.WHITE, CREATOR_SESSION_ID, "HUMAN"));
     }
 
     @Test
     void createsPrivateGameWithEntryCode() {
-        Game game = Game.create(GameVisibility.PRIVATE, TEN_MINUTES);
+        Game game = Game.create(GameVisibility.PRIVATE, TEN_MINUTES, CREATOR_SESSION_ID);
 
         assertThat(game.status()).isEqualTo(GameStatus.WAITING);
         assertThat(game.visibility()).isEqualTo(GameVisibility.PRIVATE);
@@ -39,9 +42,11 @@ class GameTest {
 
     @Test
     void rejectsMissingConfigurationAndInvalidEntryCodes() {
-        assertThatThrownBy(() -> Game.create(null, TEN_MINUTES))
+        assertThatThrownBy(() -> Game.create(null, TEN_MINUTES, CREATOR_SESSION_ID))
                 .isInstanceOf(NullPointerException.class);
-        assertThatThrownBy(() -> Game.create(GameVisibility.PUBLIC, null))
+        assertThatThrownBy(() -> Game.create(GameVisibility.PUBLIC, null, CREATOR_SESSION_ID))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> Game.create(GameVisibility.PUBLIC, TEN_MINUTES, null))
                 .isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> new GameEntryCode("ABC123"))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -56,7 +61,7 @@ class GameTest {
     void acceptsSupportedTimeControls(long initialTimeMs) {
         TimeControl timeControl = new TimeControl(initialTimeMs, 0);
 
-        Game game = Game.create(GameVisibility.PUBLIC, timeControl);
+        Game game = Game.create(GameVisibility.PUBLIC, timeControl, CREATOR_SESSION_ID);
 
         assertThat(game.timeControl()).isEqualTo(timeControl);
         assertThat(timeControl.isInfinite()).isEqualTo(initialTimeMs == 0);
@@ -77,7 +82,7 @@ class GameTest {
 
     @Test
     void transitionsFromWaitingToActiveAndFinished() {
-        Game game = Game.create(GameVisibility.PUBLIC, TEN_MINUTES);
+        Game game = Game.create(GameVisibility.PUBLIC, TEN_MINUTES, CREATOR_SESSION_ID);
 
         game.activate();
         assertThat(game.status()).isEqualTo(GameStatus.ACTIVE);
@@ -88,8 +93,8 @@ class GameTest {
 
     @Test
     void abandonsWaitingOrActiveGames() {
-        Game waitingGame = Game.create(GameVisibility.PUBLIC, TEN_MINUTES);
-        Game activeGame = Game.create(GameVisibility.PUBLIC, TEN_MINUTES);
+        Game waitingGame = Game.create(GameVisibility.PUBLIC, TEN_MINUTES, CREATOR_SESSION_ID);
+        Game activeGame = Game.create(GameVisibility.PUBLIC, TEN_MINUTES, CREATOR_SESSION_ID);
         activeGame.activate();
 
         waitingGame.abandon();
@@ -101,7 +106,7 @@ class GameTest {
 
     @Test
     void rejectsInvalidTransitionsWithoutChangingCurrentState() {
-        Game waitingGame = Game.create(GameVisibility.PUBLIC, TEN_MINUTES);
+        Game waitingGame = Game.create(GameVisibility.PUBLIC, TEN_MINUTES, CREATOR_SESSION_ID);
         assertThatThrownBy(waitingGame::finish)
                 .isInstanceOf(IllegalStateException.class);
         assertThat(waitingGame.status()).isEqualTo(GameStatus.WAITING);
@@ -116,7 +121,7 @@ class GameTest {
                 .isInstanceOf(IllegalStateException.class);
         assertThat(waitingGame.status()).isEqualTo(GameStatus.FINISHED);
 
-        Game abandonedGame = Game.create(GameVisibility.PUBLIC, TEN_MINUTES);
+        Game abandonedGame = Game.create(GameVisibility.PUBLIC, TEN_MINUTES, CREATOR_SESSION_ID);
         abandonedGame.abandon();
         assertThatThrownBy(abandonedGame::activate)
                 .isInstanceOf(IllegalStateException.class);
