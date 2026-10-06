@@ -71,22 +71,34 @@ O corpo de erro é `{"code":"...","message":"...","details":{...}}`. `code` e `m
 
 ## WebSocket
 
-O cliente conecta em `GET /ws` com `X-Session-Token`. Após a conexão, cada mensagem é um objeto JSON com `type`, `requestId` e, quando aplicável, `gameId`. `requestId` é reproduzido na confirmação ou no erro correlato.
+O cliente conecta em `GET /ws` com `X-Session-Token`. O upgrade exige uma sessão guest válida; token ausente, inválido ou expirado rejeita o handshake com HTTP `401`. Após a conexão, cada mensagem é um objeto JSON com `type`, `requestId` e os campos do tipo. `requestId` é obrigatório nas mensagens do cliente e é reproduzido na resposta ou no erro correlato.
 
 | Direção | Tipo | Campos adicionais |
 | --- | --- | --- |
 | cliente -> servidor | `game.subscribe` | `gameId` |
-| cliente -> servidor | `game.move` | `gameId`, `revision`, `uci` |
-| cliente -> servidor | `game.resign` | `gameId`, `revision` |
-| cliente -> servidor | `game.draw.offer` | `gameId`, `revision` |
-| cliente -> servidor | `game.draw.respond` | `gameId`, `revision`, `accepted` |
 | servidor -> cliente | `game.state` | `requestId` opcional, `snapshot` |
-| servidor -> cliente | `game.error` | `code`, `message`, `currentRevision`, `snapshot` |
+| servidor -> cliente | `game.error` | `requestId` opcional, `code`, `message` |
 
-Exemplo de movimento:
+Exemplo de inscrição:
 
 ```json
-{"type":"game.move","requestId":"a2","gameId":"d7fc48b7-570a-4d8d-a7ae-1bc5d20a9c13","revision":12,"uci":"e2e4"}
+{"type":"game.subscribe","requestId":"s1","gameId":"d7fc48b7-570a-4d8d-a7ae-1bc5d20a9c13"}
 ```
 
-Depois de `game.subscribe`, o servidor envia imediatamente `game.state`. Após toda transição aceita, publica o novo snapshot para os participantes somente depois da persistência da revisão. O servidor rejeita uma ação com `UNAUTHENTICATED`, `NOT_A_PARTICIPANT`, `GAME_NOT_FOUND`, `INVALID_GAME_STATE`, `STALE_REVISION`, `NOT_YOUR_TURN` ou `ILLEGAL_MOVE`; a rejeição não altera a partida.
+Após autorizar `game.subscribe`, o servidor associa a conexão à partida e envia imediatamente:
+
+```json
+{"type":"game.state","requestId":"s1","snapshot":{"gameId":"d7fc48b7-570a-4d8d-a7ae-1bc5d20a9c13","status":"WAITING"}}
+```
+
+O campo `snapshot` sempre usa integralmente o formato da seção "Snapshot de partida"; o exemplo está abreviado apenas para destacar o envelope. Uma nova inscrição válida na mesma conexão substitui a associação anterior. Somente participantes podem se inscrever.
+
+Após uma transição REST aceita, o servidor publica `game.state` sem `requestId` para as conexões inscritas na partida, somente depois do commit da transação persistente. Nesta versão, a transição publicada é a entrada do segundo jogador, de `WAITING` para `ACTIVE`.
+
+JSON inválido, campos obrigatórios ausentes ou `gameId` inválido retornam `VALIDATION_ERROR`. Tipo ainda não suportado retorna `UNSUPPORTED_MESSAGE`. Partida inexistente retorna `GAME_NOT_FOUND` e tentativa de observação por não participante retorna `NOT_A_PARTICIPANT`. O erro correlato inclui o `requestId` recebido quando ele for uma string válida:
+
+```json
+{"type":"game.error","requestId":"s1","code":"NOT_A_PARTICIPANT","message":"Not a game participant"}
+```
+
+Essas rejeições não alteram nem associam a partida. Comandos de movimento, abandono e empate não fazem parte deste contrato WebSocket nesta versão.

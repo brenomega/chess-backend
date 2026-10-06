@@ -41,10 +41,12 @@ class GameEntryControllerTest {
     private InMemoryGameEntryStore store;
     private MockMvc mockMvc;
     private UUID sessionId;
+    private List<GameSnapshot> publishedSnapshots;
 
     @BeforeEach
     void setUp() {
         store = new InMemoryGameEntryStore();
+        publishedSnapshots = new java.util.ArrayList<>();
         GuestSessionService sessionService = new GuestSessionService(
                 new InMemoryGuestSessionStore(),
                 () -> TOKEN,
@@ -53,7 +55,11 @@ class GameEntryControllerTest {
         GuestSessionResult session = sessionService.create();
         sessionId = session.sessionId();
         mockMvc = MockMvcBuilders.standaloneSetup(new GameEntryController(
-                        new GameEntryService(store, Clock.fixed(NOW, ZoneOffset.UTC)), sessionService))
+                        new GameEntryService(
+                                store,
+                                publishedSnapshots::add,
+                                Clock.fixed(NOW, ZoneOffset.UTC)),
+                        sessionService))
                 .setControllerAdvice(
                         new GuestSessionExceptionHandler(),
                         new GameQueryExceptionHandler(),
@@ -77,6 +83,11 @@ class GameEntryControllerTest {
 
         assertThat(store.lastSaved().participants().get(1).sessionId()).isEqualTo(sessionId);
         assertThat(store.lastSaved().clockUpdatedAt()).isEqualTo(NOW);
+        assertThat(publishedSnapshots).singleElement().satisfies(snapshot -> {
+            assertThat(snapshot.gameId()).isEqualTo(gameId);
+            assertThat(snapshot.status()).isEqualTo(GameStatus.ACTIVE);
+            assertThat(snapshot.revision()).isEqualTo(1);
+        });
     }
 
     @Test
