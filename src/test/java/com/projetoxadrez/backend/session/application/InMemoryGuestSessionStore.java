@@ -1,26 +1,26 @@
 package com.projetoxadrez.backend.session.application;
 
-import com.projetoxadrez.backend.session.persistence.GuestSessionEntity;
+import com.projetoxadrez.backend.session.domain.GuestSession;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
 public class InMemoryGuestSessionStore implements GuestSessionStore {
 
-    private final Map<String, GuestSessionEntity> sessionsByHash = new HashMap<>();
+    private final Map<String, GuestSession> sessionsByHash = new HashMap<>();
     private int saveCount;
-    private GuestSessionEntity lastSaved;
+    private GuestSession lastSaved;
 
     @Override
-    public GuestSessionEntity save(GuestSessionEntity session) {
-        sessionsByHash.put(session.getRecoveryTokenHash(), session);
+    public GuestSession save(GuestSession session) {
+        sessionsByHash.put(session.recoveryTokenHash(), session);
         saveCount++;
         lastSaved = session;
         return session;
     }
 
     @Override
-    public Optional<GuestSessionEntity> findByRecoveryTokenHash(String recoveryTokenHash) {
+    public Optional<GuestSession> findByRecoveryTokenHash(String recoveryTokenHash) {
         return Optional.ofNullable(sessionsByHash.get(recoveryTokenHash));
     }
 
@@ -28,7 +28,7 @@ public class InMemoryGuestSessionStore implements GuestSessionStore {
         return saveCount;
     }
 
-    public GuestSessionEntity getLastSaved() {
+    public GuestSession getLastSaved() {
         return lastSaved;
     }
 }

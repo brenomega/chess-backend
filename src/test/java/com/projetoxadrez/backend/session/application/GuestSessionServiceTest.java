@@ -35,8 +35,8 @@ class GuestSessionServiceTest {
         assertThat(result.sessionId()).isNotNull();
         assertThat(result.recoveryToken()).isEqualTo(TOKEN);
         assertThat(result.expiresAt()).isEqualTo(NOW.plus(Duration.ofDays(30)));
-        assertThat(store.getLastSaved().getRecoveryTokenHash()).isNotEqualTo(TOKEN);
-        assertThat(store.getLastSaved().getRecoveryTokenHash()).matches("[0-9a-f]{64}");
+        assertThat(store.getLastSaved().recoveryTokenHash()).isNotEqualTo(TOKEN);
+        assertThat(store.getLastSaved().recoveryTokenHash()).matches("[0-9a-f]{64}");
     }
 
     @Test
@@ -48,8 +48,8 @@ class GuestSessionServiceTest {
         assertThat(recovered.sessionId()).isEqualTo(created.sessionId());
         assertThat(recovered.recoveryToken()).isEqualTo(TOKEN);
         assertThat(recovered.expiresAt()).isEqualTo(created.expiresAt());
-        assertThat(store.getSaveCount()).isEqualTo(1);
-        assertThat(store.getLastSaved().getLastSeenAt()).isEqualTo(NOW);
+        assertThat(store.getSaveCount()).isEqualTo(2);
+        assertThat(store.getLastSaved().lastSeenAt()).isEqualTo(NOW);
     }
 
     @Test

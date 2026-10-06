@@ -1,6 +1,7 @@
 package com.projetoxadrez.backend.session.persistence;
 
 import com.projetoxadrez.backend.session.application.GuestSessionStore;
+import com.projetoxadrez.backend.session.domain.GuestSession;
 import java.util.Optional;
 import org.springframework.stereotype.Component;
 
@@ -14,12 +15,29 @@ public class JpaGuestSessionStore implements GuestSessionStore {
     }
 
     @Override
-    public GuestSessionEntity save(GuestSessionEntity session) {
-        return repository.save(session);
+    public GuestSession save(GuestSession session) {
+        GuestSessionEntity entity = repository.findById(session.id())
+                .orElseGet(() -> new GuestSessionEntity(
+                        session.id(),
+                        session.recoveryTokenHash(),
+                        session.expiresAt(),
+                        session.createdAt(),
+                        session.lastSeenAt()));
+        entity.updateLastSeenAt(session.lastSeenAt());
+        return toDomain(repository.save(entity));
     }
 
     @Override
-    public Optional<GuestSessionEntity> findByRecoveryTokenHash(String recoveryTokenHash) {
-        return repository.findByRecoveryTokenHash(recoveryTokenHash);
+    public Optional<GuestSession> findByRecoveryTokenHash(String recoveryTokenHash) {
+        return repository.findByRecoveryTokenHash(recoveryTokenHash).map(JpaGuestSessionStore::toDomain);
+    }
+
+    private static GuestSession toDomain(GuestSessionEntity entity) {
+        return new GuestSession(
+                entity.getId(),
+                entity.getRecoveryTokenHash(),
+                entity.getExpiresAt(),
+                entity.getCreatedAt(),
+                entity.getLastSeenAt());
     }
 }
