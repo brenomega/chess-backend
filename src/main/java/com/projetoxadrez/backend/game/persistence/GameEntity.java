@@ -1,5 +1,6 @@
 package com.projetoxadrez.backend.game.persistence;
 
+import com.projetoxadrez.backend.game.chess.ChessPosition;
 import com.projetoxadrez.backend.game.chess.Side;
 import com.projetoxadrez.backend.game.domain.Game;
 import com.projetoxadrez.backend.game.domain.GameStatus;
@@ -85,6 +86,27 @@ public class GameEntity {
     private List<GameParticipantEntity> participants = new ArrayList<>();
 
     protected GameEntity() {
+    }
+
+    static GameEntity create(Game game, Instant createdAt) {
+        GameEntity entity = new GameEntity();
+        entity.id = game.id().value();
+        entity.status = game.status();
+        entity.visibility = game.visibility();
+        entity.entryCode = game.entryCode().map(code -> code.value()).orElse(null);
+        entity.revision = game.revision();
+        entity.positionFen = ChessPosition.initial().toFen();
+        entity.whiteRemainingMs = game.timeControl().initialTimeMs();
+        entity.blackRemainingMs = game.timeControl().initialTimeMs();
+        entity.initialTimeMs = game.timeControl().initialTimeMs();
+        entity.incrementMs = game.timeControl().incrementMs();
+        entity.createdAt = createdAt;
+        entity.updatedAt = createdAt;
+        game.participants().stream()
+                .map(participant -> new GameParticipantEntity(
+                        entity, participant.side(), participant.sessionId(), participant.kind()))
+                .forEach(entity.participants::add);
+        return entity;
     }
 
     public UUID getId() {
