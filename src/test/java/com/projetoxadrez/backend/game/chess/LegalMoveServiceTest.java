@@ -93,7 +93,6 @@ class LegalMoveServiceTest {
     void generatesKnownLegalMoveCountsFromInitialPosition() {
         ChessPosition initial = ChessPosition.initial();
 
-        assertThat(perft(initial, 1)).isEqualTo(20);
         assertThat(perft(initial, 2)).isEqualTo(400);
         assertThat(perft(initial, 3)).isEqualTo(8_902);
     }

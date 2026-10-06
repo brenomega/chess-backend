@@ -3,6 +3,8 @@ package com.projetoxadrez.backend.game.persistence;
 import com.projetoxadrez.backend.game.application.GameCreationStore;
 import com.projetoxadrez.backend.game.application.GameSnapshot;
 import com.projetoxadrez.backend.game.domain.Game;
+import com.projetoxadrez.backend.game.domain.GameStatus;
+import com.projetoxadrez.backend.game.domain.GameVisibility;
 import java.time.Instant;
 import org.springframework.stereotype.Component;
 
@@ -15,6 +17,12 @@ public class JpaGameCreationStore implements GameCreationStore {
     public JpaGameCreationStore(GameRepository repository, GameSnapshotFactory snapshotFactory) {
         this.repository = repository;
         this.snapshotFactory = snapshotFactory;
+    }
+
+    @Override
+    public boolean existsPrivateWaitingByEntryCode(String entryCode) {
+        return repository.existsByEntryCodeAndStatusAndVisibility(
+                entryCode, GameStatus.WAITING, GameVisibility.PRIVATE);
     }
 
     @Override

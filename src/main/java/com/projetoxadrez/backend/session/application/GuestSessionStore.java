@@ -1,11 +1,11 @@
 package com.projetoxadrez.backend.session.application;
 
-import com.projetoxadrez.backend.session.persistence.GuestSessionEntity;
+import com.projetoxadrez.backend.session.domain.GuestSession;
 import java.util.Optional;
 
 public interface GuestSessionStore {
 
-    GuestSessionEntity save(GuestSessionEntity session);
+    GuestSession save(GuestSession session);
 
-    Optional<GuestSessionEntity> findByRecoveryTokenHash(String recoveryTokenHash);
+    Optional<GuestSession> findByRecoveryTokenHash(String recoveryTokenHash);
 }

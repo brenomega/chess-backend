@@ -82,7 +82,11 @@ class GameCreationFlowIntegrationTest {
 
         Session sessionB = createSession();
         joinPublicGame(sessionB.token(), publicGame.id());
+        rejectUnknownPrivateCode(sessionB.token());
         joinPrivateGame(sessionB.token(), privateGame);
+
+        Session sessionC = createSession();
+        rejectCodeForPrivateGameThatIsNoLongerWaiting(sessionC.token(), privateGame.entryCode());
 
         mockMvc.perform(get("/v1/games").header("X-Session-Token", sessionB.token()))
                 .andExpect(status().isOk())
@@ -151,17 +155,39 @@ class GameCreationFlowIntegrationTest {
     }
 
     private void joinPrivateGame(String token, CreatedGame game) throws Exception {
-        mockMvc.perform(post("/v1/games/{gameId}/join", game.id())
+        mockMvc.perform(post("/v1/games/join")
                         .header("X-Session-Token", token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"entryCode\":\"%s\"}".formatted(game.entryCode())))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.gameId").value(game.id().toString()))
                 .andExpect(jsonPath("$.status").value("ACTIVE"))
                 .andExpect(jsonPath("$.visibility").value("PRIVATE"))
                 .andExpect(jsonPath("$.entryCode").value(game.entryCode()))
                 .andExpect(jsonPath("$.players.length()").value(2))
                 .andExpect(jsonPath("$.players[1].side").value("BLACK"))
                 .andExpect(jsonPath("$.players[1].kind").value("HUMAN"));
+    }
+
+    private void rejectUnknownPrivateCode(String token) throws Exception {
+        mockMvc.perform(post("/v1/games/join")
+                        .header("X-Session-Token", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"entryCode\":\"XYZ789\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("INVALID_ENTRY_CODE"))
+                .andExpect(jsonPath("$.details").isEmpty())
+                .andExpect(jsonPath("$.gameId").doesNotExist());
+    }
+
+    private void rejectCodeForPrivateGameThatIsNoLongerWaiting(String token, String entryCode) throws Exception {
+        mockMvc.perform(post("/v1/games/join")
+                        .header("X-Session-Token", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"entryCode\":\"%s\"}".formatted(entryCode)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("INVALID_ENTRY_CODE"))
+                .andExpect(jsonPath("$.details").isEmpty());
     }
 
     private void assertPersistedGame(

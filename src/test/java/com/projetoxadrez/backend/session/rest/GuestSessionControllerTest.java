@@ -8,7 +8,7 @@ import com.projetoxadrez.backend.session.application.GuestSessionProperties;
 import com.projetoxadrez.backend.session.application.GuestSessionResult;
 import com.projetoxadrez.backend.session.application.GuestSessionService;
 import com.projetoxadrez.backend.session.application.InMemoryGuestSessionStore;
-import com.projetoxadrez.backend.session.persistence.GuestSessionEntity;
+import com.projetoxadrez.backend.session.domain.GuestSession;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Clock;
@@ -68,7 +68,7 @@ class GuestSessionControllerTest {
 
     @Test
     void rejectsInvalidRequestAndInvalidOrExpiredSessions() throws Exception {
-        store.save(new GuestSessionEntity(
+        store.save(new GuestSession(
                 UUID.randomUUID(), sha256("expired"), NOW, NOW.minusSeconds(60), NOW.minusSeconds(30)));
 
         expectError("", 400, "VALIDATION_ERROR");

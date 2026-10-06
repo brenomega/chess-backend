@@ -51,10 +51,18 @@ public final class Game {
     }
 
     public static Game create(GameVisibility visibility, TimeControl timeControl, UUID creatorSessionId) {
+        GameEntryCode entryCode = visibility == GameVisibility.PRIVATE ? GameEntryCode.newCode() : null;
+        return create(visibility, timeControl, creatorSessionId, entryCode);
+    }
+
+    public static Game create(
+            GameVisibility visibility,
+            TimeControl timeControl,
+            UUID creatorSessionId,
+            GameEntryCode entryCode) {
         Objects.requireNonNull(visibility, "visibility must not be null");
         Objects.requireNonNull(timeControl, "timeControl must not be null");
         Objects.requireNonNull(creatorSessionId, "creatorSessionId must not be null");
-        GameEntryCode entryCode = visibility == GameVisibility.PRIVATE ? GameEntryCode.newCode() : null;
         return new Game(
                 GameId.newId(),
                 GameStatus.WAITING,
