@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.projetoxadrez.backend.game.application.GameEntryService;
 import com.projetoxadrez.backend.game.application.GameSnapshot;
+import com.projetoxadrez.backend.game.application.GameStatePublisher;
 import com.projetoxadrez.backend.game.chess.Side;
 import com.projetoxadrez.backend.game.domain.GameStatus;
 import com.projetoxadrez.backend.game.domain.GameVisibility;
@@ -223,6 +224,12 @@ class JpaGameEntryStoreIntegrationTest {
         @Primary
         Clock clock() {
             return Clock.fixed(NOW, ZoneOffset.UTC);
+        }
+
+        @Bean
+        GameStatePublisher gameStatePublisher() {
+            return snapshot -> {
+            };
         }
     }
 

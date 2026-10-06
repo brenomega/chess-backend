@@ -10,10 +10,12 @@ import org.springframework.transaction.annotation.Transactional;
 public class GameEntryService {
 
     private final GameEntryStore store;
+    private final GameStatePublisher statePublisher;
     private final Clock clock;
 
-    public GameEntryService(GameEntryStore store, Clock clock) {
+    public GameEntryService(GameEntryStore store, GameStatePublisher statePublisher, Clock clock) {
         this.store = store;
+        this.statePublisher = statePublisher;
         this.clock = clock;
     }
 
@@ -31,7 +33,9 @@ public class GameEntryService {
         } catch (Game.GameNotJoinableException exception) {
             throw new GameNotJoinableException();
         }
-        return store.save(game);
+        GameSnapshot snapshot = store.save(game);
+        statePublisher.publishAfterCommit(snapshot);
+        return snapshot;
     }
 
     public static final class GameNotFoundException extends RuntimeException {
