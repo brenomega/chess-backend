@@ -5,6 +5,8 @@ import com.projetoxadrez.backend.game.application.GameSnapshot;
 import com.projetoxadrez.backend.game.domain.Game;
 import com.projetoxadrez.backend.game.domain.GameEntryCode;
 import com.projetoxadrez.backend.game.domain.GameId;
+import com.projetoxadrez.backend.game.domain.GameStatus;
+import com.projetoxadrez.backend.game.domain.GameVisibility;
 import com.projetoxadrez.backend.game.domain.TimeControl;
 import java.util.Optional;
 import java.util.UUID;
@@ -24,6 +26,13 @@ public class JpaGameEntryStore implements GameEntryStore {
     @Override
     public Optional<Game> findById(UUID gameId) {
         return repository.findWithParticipantsById(gameId).map(JpaGameEntryStore::toDomain);
+    }
+
+    @Override
+    public Optional<Game> findPrivateWaitingByEntryCode(String entryCode) {
+        return repository.findByEntryCodeAndStatusAndVisibility(
+                        entryCode, GameStatus.WAITING, GameVisibility.PRIVATE)
+                .map(JpaGameEntryStore::toDomain);
     }
 
     @Override

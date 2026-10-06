@@ -72,13 +72,14 @@ class JpaGameEntryStoreIntegrationTest {
         UUID gameId = UUID.randomUUID();
         UUID creatorSessionId = insertGuestSession();
         UUID joiningSessionId = insertGuestSession();
-        insertGame(gameId, GameStatus.WAITING, visibility);
+        String entryCode = visibility == GameVisibility.PRIVATE ? "ABC234" : null;
+        insertGame(gameId, GameStatus.WAITING, visibility, entryCode);
         insertParticipant(gameId, Side.WHITE, creatorSessionId);
 
         GameSnapshot snapshot = service.join(
                 gameId,
                 joiningSessionId,
-                visibility == GameVisibility.PRIVATE ? "ABC234" : null);
+                entryCode);
 
         assertThat(snapshot.status()).isEqualTo(GameStatus.ACTIVE);
         assertThat(snapshot.revision()).isEqualTo(1);
@@ -93,8 +94,8 @@ class JpaGameEntryStoreIntegrationTest {
 
     @Test
     void rejectsMissingAndInvalidPrivateCodesWithoutChangingStoredRows() {
-        UUID missingCodeGameId = waitingGame(GameVisibility.PRIVATE);
-        UUID invalidCodeGameId = waitingGame(GameVisibility.PRIVATE);
+        UUID missingCodeGameId = waitingGame(GameVisibility.PRIVATE, "DEF567");
+        UUID invalidCodeGameId = waitingGame(GameVisibility.PRIVATE, "GHJ678");
 
         assertThatThrownBy(() -> service.join(missingCodeGameId, insertGuestSession(), null))
                 .isInstanceOf(GameEntryService.EntryCodeRequiredException.class);
@@ -109,7 +110,7 @@ class JpaGameEntryStoreIntegrationTest {
     void rejectsNonWaitingGameWithoutChangingStoredRows() {
         UUID gameId = UUID.randomUUID();
         UUID creatorSessionId = insertGuestSession();
-        insertGame(gameId, GameStatus.ACTIVE, GameVisibility.PUBLIC);
+        insertGame(gameId, GameStatus.ACTIVE, GameVisibility.PUBLIC, null);
         insertParticipant(gameId, Side.WHITE, creatorSessionId);
 
         assertThatThrownBy(() -> service.join(gameId, insertGuestSession(), null))
@@ -125,7 +126,7 @@ class JpaGameEntryStoreIntegrationTest {
         UUID gameId = UUID.randomUUID();
         UUID whiteSessionId = insertGuestSession();
         UUID blackSessionId = insertGuestSession();
-        insertGame(gameId, GameStatus.WAITING, GameVisibility.PUBLIC);
+        insertGame(gameId, GameStatus.WAITING, GameVisibility.PUBLIC, null);
         insertParticipant(gameId, Side.WHITE, whiteSessionId);
         insertParticipant(gameId, Side.BLACK, blackSessionId);
 
@@ -138,10 +139,10 @@ class JpaGameEntryStoreIntegrationTest {
                 Map.of("side", Side.BLACK.name(), "session_id", blackSessionId, "kind", "HUMAN"));
     }
 
-    private UUID waitingGame(GameVisibility visibility) {
+    private UUID waitingGame(GameVisibility visibility, String entryCode) {
         UUID gameId = UUID.randomUUID();
         UUID creatorSessionId = insertGuestSession();
-        insertGame(gameId, GameStatus.WAITING, visibility);
+        insertGame(gameId, GameStatus.WAITING, visibility, entryCode);
         insertParticipant(gameId, Side.WHITE, creatorSessionId);
         return gameId;
     }
@@ -168,7 +169,7 @@ class JpaGameEntryStoreIntegrationTest {
         return sessionId;
     }
 
-    private void insertGame(UUID gameId, GameStatus status, GameVisibility visibility) {
+    private void insertGame(UUID gameId, GameStatus status, GameVisibility visibility, String entryCode) {
         jdbcTemplate.update("""
                 INSERT INTO chess.game (
                     id, status, visibility, entry_code, revision, position_fen, last_move_uci,
@@ -181,7 +182,7 @@ class JpaGameEntryStoreIntegrationTest {
                 gameId,
                 status.name(),
                 visibility.name(),
-                visibility == GameVisibility.PRIVATE ? "ABC234" : null,
+                entryCode,
                 POSITION_FEN,
                 Timestamp.from(NOW.minusSeconds(60)),
                 Timestamp.from(NOW.minusSeconds(60)));

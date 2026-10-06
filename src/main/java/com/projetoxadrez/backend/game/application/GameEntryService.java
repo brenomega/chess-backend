@@ -1,6 +1,7 @@
 package com.projetoxadrez.backend.game.application;
 
 import com.projetoxadrez.backend.game.domain.Game;
+import com.projetoxadrez.backend.game.domain.GameEntryCode;
 import java.time.Clock;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -22,6 +23,25 @@ public class GameEntryService {
     @Transactional
     public GameSnapshot join(UUID gameId, UUID sessionId, String entryCode) {
         Game game = store.findById(gameId).orElseThrow(GameNotFoundException::new);
+        return join(game, sessionId, entryCode);
+    }
+
+    @Transactional
+    public GameSnapshot joinByCode(UUID sessionId, String entryCode) {
+        if (entryCode == null || entryCode.isBlank()) {
+            throw new EntryCodeRequiredException();
+        }
+        try {
+            new GameEntryCode(entryCode);
+        } catch (IllegalArgumentException exception) {
+            throw new InvalidEntryCodeException();
+        }
+        Game game = store.findPrivateWaitingByEntryCode(entryCode)
+                .orElseThrow(InvalidEntryCodeException::new);
+        return join(game, sessionId, entryCode);
+    }
+
+    private GameSnapshot join(Game game, UUID sessionId, String entryCode) {
         try {
             game.join(sessionId, entryCode, clock.instant());
         } catch (Game.EntryCodeRequiredException exception) {

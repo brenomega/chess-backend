@@ -54,11 +54,15 @@ public class GuestSessionEntity {
         return expiresAt;
     }
 
+    public Instant getCreatedAt() {
+        return createdAt;
+    }
+
     public Instant getLastSeenAt() {
         return lastSeenAt;
     }
 
-    public void markSeenAt(Instant instant) {
+    public void updateLastSeenAt(Instant instant) {
         lastSeenAt = instant;
     }
 }

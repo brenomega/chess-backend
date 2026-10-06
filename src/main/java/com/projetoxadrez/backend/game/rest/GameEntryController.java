@@ -31,4 +31,12 @@ public class GameEntryController {
         UUID sessionId = sessionService.recover(recoveryToken).sessionId();
         return service.join(gameId, sessionId, request == null ? null : request.entryCode());
     }
+
+    @PostMapping("/join")
+    public GameSnapshot joinByCode(
+            @RequestHeader("X-Session-Token") String recoveryToken,
+            @RequestBody(required = false) GameEntryRequest request) {
+        UUID sessionId = sessionService.recover(recoveryToken).sessionId();
+        return service.joinByCode(sessionId, request == null ? null : request.entryCode());
+    }
 }

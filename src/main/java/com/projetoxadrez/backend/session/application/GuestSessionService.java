@@ -1,6 +1,6 @@
 package com.projetoxadrez.backend.session.application;
 
-import com.projetoxadrez.backend.session.persistence.GuestSessionEntity;
+import com.projetoxadrez.backend.session.domain.GuestSession;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -34,14 +34,14 @@ public class GuestSessionService {
     public GuestSessionResult create() {
         Instant now = clock.instant();
         String recoveryToken = tokenGenerator.generate();
-        GuestSessionEntity session = new GuestSessionEntity(
+        GuestSession session = new GuestSession(
                 UUID.randomUUID(),
                 hash(recoveryToken),
                 now.plus(properties.getTtl()),
                 now,
                 now);
         store.save(session);
-        return new GuestSessionResult(session.getId(), recoveryToken, session.getExpiresAt());
+        return new GuestSessionResult(session.id(), recoveryToken, session.expiresAt());
     }
 
     @Transactional
@@ -50,15 +50,16 @@ public class GuestSessionService {
             throw new InvalidSessionRequestException();
         }
 
-        GuestSessionEntity session = store.findByRecoveryTokenHash(hash(recoveryToken))
+        GuestSession session = store.findByRecoveryTokenHash(hash(recoveryToken))
                 .orElseThrow(InvalidGuestSessionException::new);
         Instant now = clock.instant();
-        if (!session.getExpiresAt().isAfter(now)) {
+        if (!session.expiresAt().isAfter(now)) {
             throw new ExpiredGuestSessionException();
         }
 
         session.markSeenAt(now);
-        return new GuestSessionResult(session.getId(), recoveryToken, session.getExpiresAt());
+        store.save(session);
+        return new GuestSessionResult(session.id(), recoveryToken, session.expiresAt());
     }
 
     private static String hash(String value) {

@@ -105,6 +105,44 @@ class GameEntryControllerTest {
     }
 
     @Test
+    void joinsPrivateWaitingGameUsingOnlyItsEntryCode() throws Exception {
+        UUID gameId = UUID.randomUUID();
+        store.putGame(waitingGame(gameId, GameVisibility.PRIVATE, "ABC234"));
+
+        mockMvc.perform(post("/v1/games/join")
+                        .header("X-Session-Token", TOKEN)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"entryCode\":\"ABC234\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.gameId").value(gameId.toString()))
+                .andExpect(jsonPath("$.status").value("ACTIVE"))
+                .andExpect(jsonPath("$.visibility").value("PRIVATE"));
+    }
+
+    @Test
+    void rejectsUnknownMalformedAndMissingCodesWithoutExposingAGame() throws Exception {
+        store.putGame(waitingGame(UUID.randomUUID(), GameVisibility.PRIVATE, "ABC234"));
+
+        mockMvc.perform(post("/v1/games/join")
+                        .header("X-Session-Token", TOKEN)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"entryCode\":\"XYZ789\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("INVALID_ENTRY_CODE"))
+                .andExpect(jsonPath("$.details").isEmpty())
+                .andExpect(jsonPath("$.gameId").doesNotExist());
+        mockMvc.perform(post("/v1/games/join")
+                        .header("X-Session-Token", TOKEN)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"entryCode\":\"abc\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("INVALID_ENTRY_CODE"));
+        mockMvc.perform(post("/v1/games/join").header("X-Session-Token", TOKEN))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("ENTRY_CODE_REQUIRED"));
+    }
+
+    @Test
     void rejectsMissingOrInvalidPrivateCodesWithTheDocumentedErrors() throws Exception {
         UUID missingCodeGameId = UUID.randomUUID();
         UUID invalidCodeGameId = UUID.randomUUID();
@@ -202,6 +240,18 @@ class GameEntryControllerTest {
         @Override
         public Optional<Game> findById(UUID gameId) {
             return Optional.ofNullable(games.get(gameId));
+        }
+
+        @Override
+        public Optional<Game> findPrivateWaitingByEntryCode(String entryCode) {
+            return games.values().stream()
+                    .filter(game -> game.visibility() == GameVisibility.PRIVATE)
+                    .filter(game -> game.status() == GameStatus.WAITING)
+                    .filter(game -> game.entryCode()
+                            .map(GameEntryCode::value)
+                            .filter(entryCode::equals)
+                            .isPresent())
+                    .findFirst();
         }
 
         @Override

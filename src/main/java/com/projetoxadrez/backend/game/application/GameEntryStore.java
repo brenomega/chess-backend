@@ -8,5 +8,7 @@ public interface GameEntryStore {
 
     Optional<Game> findById(UUID gameId);
 
+    Optional<Game> findPrivateWaitingByEntryCode(String entryCode);
+
     GameSnapshot save(Game game);
 }
