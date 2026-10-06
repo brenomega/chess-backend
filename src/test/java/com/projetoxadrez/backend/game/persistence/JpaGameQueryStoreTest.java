@@ -77,6 +77,15 @@ class JpaGameQueryStoreTest {
         assertThat(snapshot.result()).isNull();
     }
 
+    @Test
+    void obtainsTheSideToMoveFromTheStoredChessPosition() {
+        set("positionFen", "8/8/8/8/8/8/8/8 b - - 0 1");
+
+        GameSnapshot snapshot = store.snapshot(game);
+
+        assertThat(snapshot.position().sideToMove()).isEqualTo(Side.BLACK);
+    }
+
     private void set(String field, Object value) {
         ReflectionTestUtils.setField(game, field, value);
     }
