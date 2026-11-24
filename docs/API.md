@@ -46,6 +46,8 @@ Partidas com IA não esperam ninguém, por isso já nascem `ACTIVE`. São sempre
 
 Uma partida `AI_VS_AI` pode ser assinada por qualquer sessão, já que existe para ser assistida. Nos outros modos, `game.subscribe` continua restrito aos participantes.
 
+Quando a vez é de um participante `AI`, o Backend enfileira o trabalho para o worker e aplica o lance que ele devolver, pelas mesmas regras de um lance humano. O cliente não faz nada de diferente: recebe um `game.state` novo quando a IA joga. O contrato entre Backend e worker está em `docs/contracts/backend-ai.md` e não faz parte da API do cliente.
+
 ### Snapshot de partida
 
 ```json
