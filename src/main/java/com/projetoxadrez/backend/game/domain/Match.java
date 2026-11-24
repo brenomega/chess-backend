@@ -14,7 +14,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Partida em andamento: posição, relógio e resultado.
+ * Partida em andamento: posição, relógio, oferta de empate e resultado.
  *
  * <p>Enquanto {@link Game} cobre a criação e a entrada de jogadores, este agregado concentra as
  * ações executadas durante a partida (EAP 2.9), o relógio autoritativo (2.10), a revisão das ações
@@ -212,6 +212,8 @@ public final class Match {
         position = position.apply(move);
         history = history.append(move);
         lastMoveUci = move.toUci();
+        // Uma oferta de empate não sobrevive ao lance seguinte.
+        drawOfferSide = null;
         addIncrement(side);
         activeSide = position.sideToMove();
         clockUpdatedAt = now;
@@ -231,6 +233,41 @@ public final class Match {
         finish(side.opposite() == Side.WHITE ? "WHITE_WIN" : "BLACK_WIN", "RESIGNATION", now);
     }
 
+    /** Oferta de empate ao oponente (EAP 2.9.3). */
+    public void offerDraw(UUID sessionId, long expectedRevision, Instant now) {
+        lastActionAt = now;
+        Side side = requireParticipant(sessionId);
+        requireActive(now);
+        requireRevision(expectedRevision);
+        if (drawOfferSide == side) {
+            return; // repetição da mesma oferta: nada muda
+        }
+        if (drawOfferSide == side.opposite()) {
+            // O oponente já havia oferecido: oferecer de volta equivale a aceitar.
+            acceptDraw(now);
+            return;
+        }
+        drawOfferSide = side;
+        revision++;
+    }
+
+    /** Resposta à oferta pendente (EAP 2.9.3). */
+    public void respondDraw(UUID sessionId, long expectedRevision, boolean accept, Instant now) {
+        lastActionAt = now;
+        Side side = requireParticipant(sessionId);
+        requireActive(now);
+        requireRevision(expectedRevision);
+        if (drawOfferSide == null || drawOfferSide == side) {
+            throw new NoDrawOfferException();
+        }
+        if (accept) {
+            acceptDraw(now);
+            return;
+        }
+        drawOfferSide = null;
+        revision++;
+    }
+
     /**
      * Encerra a partida se o tempo do lado da vez acabou (EAP 2.10.2). Devolve true quando o
      * relógio decidiu a partida nesta chamada.
@@ -242,6 +279,11 @@ public final class Match {
         }
         chargeElapsed(now);
         return finishedByTimeout();
+    }
+
+    private void acceptDraw(Instant now) {
+        drawOfferSide = null;
+        finish("DRAW", "DRAW_AGREED", now);
     }
 
     /** Desconta do lado da vez o tempo decorrido desde a última atualização (EAP 2.10.1). */
@@ -346,6 +388,9 @@ public final class Match {
     }
 
     public static final class IllegalMoveException extends RuntimeException {
+    }
+
+    public static final class NoDrawOfferException extends RuntimeException {
     }
 
     public static final class GameTimedOutException extends RuntimeException {

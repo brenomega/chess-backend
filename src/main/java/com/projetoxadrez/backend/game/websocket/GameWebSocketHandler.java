@@ -69,6 +69,18 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
             });
             case "game.abandon" -> action(
                     session, requestId, message, (gameId, sessionId) -> actionService.abandon(gameId, sessionId));
+            case "draw.offer" -> action(
+                    session,
+                    requestId,
+                    message,
+                    (gameId, sessionId) -> actionService.offerDraw(gameId, sessionId, revision(message)));
+            case "draw.respond" -> action(session, requestId, message, (gameId, sessionId) -> {
+                JsonNode accept = message.get("accept");
+                if (accept == null || !accept.isBoolean()) {
+                    throw new MissingFieldException("accept must be a boolean");
+                }
+                return actionService.respondDraw(gameId, sessionId, revision(message), accept.booleanValue());
+            });
             default -> subscriptions.sendError(
                     session, requestId, "UNSUPPORTED_MESSAGE", "Message type is not supported");
         }
@@ -143,6 +155,8 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
             subscriptions.sendError(session, requestId, "STALE_REVISION", "Revision is out of date");
         } catch (Match.IllegalMoveException exception) {
             subscriptions.sendError(session, requestId, "ILLEGAL_MOVE", "Move is not legal in this position");
+        } catch (Match.NoDrawOfferException exception) {
+            subscriptions.sendError(session, requestId, "NO_DRAW_OFFER", "There is no draw offer to respond to");
         }
     }
 
