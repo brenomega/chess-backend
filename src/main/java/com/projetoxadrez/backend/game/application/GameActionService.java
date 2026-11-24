@@ -42,6 +42,12 @@ public class GameActionService {
         return act(match, () -> match.applyMove(sessionId, expectedRevision, move, clock.instant()));
     }
 
+    @Transactional(noRollbackFor = Match.GameTimedOutException.class)
+    public GameSnapshot abandon(UUID gameId, UUID sessionId) {
+        Match match = load(gameId);
+        return act(match, () -> match.abandon(sessionId, clock.instant()));
+    }
+
     /**
      * Executa a ação e grava. Se o relógio encerrou a partida, o fim é gravado e publicado mesmo
      * com a ação rejeitada: o timeout é um fato novo, não um efeito da ação (EAP 2.10.2).

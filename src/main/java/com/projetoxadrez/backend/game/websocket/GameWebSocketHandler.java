@@ -67,6 +67,8 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                 }
                 return actionService.move(gameId, sessionId, revision(message), uci);
             });
+            case "game.abandon" -> action(
+                    session, requestId, message, (gameId, sessionId) -> actionService.abandon(gameId, sessionId));
             default -> subscriptions.sendError(
                     session, requestId, "UNSUPPORTED_MESSAGE", "Message type is not supported");
         }

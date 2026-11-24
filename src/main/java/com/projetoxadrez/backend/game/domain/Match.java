@@ -220,6 +220,17 @@ public final class Match {
         TERMINAL_STATE.result(position).ifPresent(this::finishWith);
     }
 
+    /** Abandono voluntário: o oponente vence (EAP 2.9.2). */
+    public void abandon(UUID sessionId, Instant now) {
+        lastActionAt = now;
+        Side side = requireParticipant(sessionId);
+        requireActive(now);
+        if (status != GameStatus.ACTIVE) {
+            return; // já encerrada pelo relógio
+        }
+        finish(side.opposite() == Side.WHITE ? "WHITE_WIN" : "BLACK_WIN", "RESIGNATION", now);
+    }
+
     /**
      * Encerra a partida se o tempo do lado da vez acabou (EAP 2.10.2). Devolve true quando o
      * relógio decidiu a partida nesta chamada.
