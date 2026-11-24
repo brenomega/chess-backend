@@ -5,6 +5,7 @@ import com.projetoxadrez.backend.game.chess.Side;
 import com.projetoxadrez.backend.game.domain.Game;
 import com.projetoxadrez.backend.game.domain.GameStatus;
 import com.projetoxadrez.backend.game.domain.GameVisibility;
+import com.projetoxadrez.backend.game.domain.Match;
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -83,6 +84,9 @@ public class GameEntity {
 
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
+
+    @Column(name = "ended_at")
+    private Instant endedAt;
 
     @OneToMany(mappedBy = "game", cascade = CascadeType.ALL)
     @OrderBy("id.side")
@@ -187,6 +191,29 @@ public class GameEntity {
 
     public List<GameParticipantEntity> getParticipants() {
         return participants;
+    }
+
+    /** Grava o estado resultante de uma ação da partida (EAP 2.9, 2.11). */
+    void applyMatchState(Match match) {
+        if (!id.equals(match.id().value())) {
+            throw new IllegalArgumentException("Cannot apply state from another game");
+        }
+        status = match.status();
+        revision = match.revision();
+        positionFen = match.position().toFen();
+        moveHistory = String.join(" ", match.history().uciMoves());
+        lastMoveUci = match.lastMoveUci();
+        activeSide = match.activeSide();
+        clockUpdatedAt = match.clockUpdatedAt();
+        drawOfferSide = match.drawOfferSide();
+        resultOutcome = match.resultOutcome();
+        resultReason = match.resultReason();
+        if (match.lastActionAt() != null) {
+            updatedAt = match.lastActionAt();
+        }
+        if (match.endedAt() != null) {
+            endedAt = match.endedAt();
+        }
     }
 
     void applyEntryState(Game game) {
