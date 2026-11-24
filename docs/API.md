@@ -77,6 +77,10 @@ O cliente conecta em `GET /ws` com `X-Session-Token`. O upgrade exige uma sessã
 | Direção | Tipo | Campos adicionais |
 | --- | --- | --- |
 | cliente -> servidor | `game.subscribe` | `gameId` |
+| cliente -> servidor | `game.move` | `gameId`, `uci`, `revision` opcional |
+| cliente -> servidor | `game.abandon` | `gameId` |
+| cliente -> servidor | `draw.offer` | `gameId`, `revision` opcional |
+| cliente -> servidor | `draw.respond` | `gameId`, `accept`, `revision` opcional |
 | servidor -> cliente | `game.state` | `requestId` opcional, `snapshot` |
 | servidor -> cliente | `game.error` | `requestId` opcional, `code`, `message` |
 
@@ -102,4 +106,40 @@ JSON inválido, campos obrigatórios ausentes ou `gameId` inválido retornam `VA
 {"type":"game.error","requestId":"s1","code":"NOT_A_PARTICIPANT","message":"Not a game participant"}
 ```
 
-Essas rejeições não alteram nem associam a partida. Comandos de movimento, abandono e empate não fazem parte deste contrato WebSocket nesta versão.
+Essas rejeições não alteram nem associam a partida.
+
+### Ações da partida
+
+As quatro ações abaixo só valem com `status` igual a `ACTIVE` e só são aceitas dos participantes da partida. Cada ação aceita responde com `game.state` correlacionado ao `requestId` e publica o mesmo `game.state`, sem `requestId`, para as outras conexões inscritas, sempre depois do commit da transação.
+
+```json
+{"type":"game.move","requestId":"m1","gameId":"d7fc48b7-570a-4d8d-a7ae-1bc5d20a9c13","uci":"e2e4","revision":12}
+{"type":"game.abandon","requestId":"m2","gameId":"d7fc48b7-570a-4d8d-a7ae-1bc5d20a9c13"}
+{"type":"draw.offer","requestId":"m3","gameId":"d7fc48b7-570a-4d8d-a7ae-1bc5d20a9c13","revision":13}
+{"type":"draw.respond","requestId":"m4","gameId":"d7fc48b7-570a-4d8d-a7ae-1bc5d20a9c13","accept":true,"revision":14}
+```
+
+`uci` usa notação UCI de quatro caracteres, com um quinto caractere (`q`, `r`, `b` ou `n`) na promoção.
+
+`revision` é a revisão que o cliente acredita ser a atual, lida do último `snapshot` recebido. Quando presente e diferente da revisão da partida, a ação é recusada com `STALE_REVISION` e nada muda — é assim que um reenvio atrasado deixa de ser aplicado duas vezes. Quando ausente, o servidor não confere a revisão.
+
+`game.abandon` encerra a partida com vitória do oponente por `RESIGNATION`. `draw.offer` registra a oferta; oferecer quando o oponente já ofereceu equivale a aceitar. `draw.respond` com `accept` verdadeiro encerra em `DRAW` por `DRAW_AGREED`, e com `accept` falso apenas retira a oferta. Uma oferta pendente é descartada no lance seguinte.
+
+O relógio é autoritativo no servidor: o tempo decorrido desde a última atualização é descontado do lado da vez em toda ação. Se o tempo do lado da vez chega a zero, a partida termina por `TIMEOUT` com vitória do oponente, o estado encerrado é publicado aos inscritos e a ação que chegou atrasada é recusada com `INVALID_GAME_STATE`.
+
+### Códigos de erro do WebSocket
+
+| Código | Quando ocorre |
+| --- | --- |
+| `VALIDATION_ERROR` | JSON inválido, campo obrigatório ausente, `gameId` fora do formato UUID ou `uci` fora da notação UCI |
+| `UNSUPPORTED_MESSAGE` | `type` não previsto neste contrato |
+| `SESSION_INVALID` | conexão sem sessão guest válida |
+| `GAME_NOT_FOUND` | partida inexistente |
+| `NOT_A_PARTICIPANT` | a sessão não joga esta partida |
+| `INVALID_GAME_STATE` | partida não está `ACTIVE` |
+| `NOT_YOUR_TURN` | ação de lance fora da vez |
+| `STALE_REVISION` | `revision` diferente da revisão atual da partida |
+| `ILLEGAL_MOVE` | lance ilegal na posição |
+| `NO_DRAW_OFFER` | `draw.respond` sem oferta pendente do oponente |
+
+Nenhuma rejeição altera a partida, com uma exceção deliberada: quando a recusa é o estouro do relógio, a partida é encerrada e persistida antes do erro ser enviado.
