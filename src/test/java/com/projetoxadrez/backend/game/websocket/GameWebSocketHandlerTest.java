@@ -10,15 +10,22 @@ import com.projetoxadrez.backend.game.application.GameQueryService;
 import com.projetoxadrez.backend.game.application.GameQueryStore;
 import com.projetoxadrez.backend.game.application.GameSnapshot;
 import com.projetoxadrez.backend.game.application.LobbyGame;
+import com.projetoxadrez.backend.game.chess.ChessPosition;
+import com.projetoxadrez.backend.game.chess.MoveHistory;
 import com.projetoxadrez.backend.game.chess.Side;
+import com.projetoxadrez.backend.game.domain.Game;
+import com.projetoxadrez.backend.game.domain.GameId;
 import com.projetoxadrez.backend.game.domain.GameStatus;
 import com.projetoxadrez.backend.game.domain.GameVisibility;
 import com.projetoxadrez.backend.game.domain.Match;
+import com.projetoxadrez.backend.game.domain.TimeControl;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.security.Principal;
 import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -39,9 +46,14 @@ class GameWebSocketHandlerTest {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final UUID sessionId = UUID.randomUUID();
+    private final UUID opponentSessionId = UUID.randomUUID();
     private final UUID gameId = UUID.randomUUID();
 
+    private static final Instant NOW = Instant.parse("2026-11-24T15:00:00Z");
+    private static final TimeControl TEN_MINUTES = new TimeControl(600_000, 0);
+
     private InMemoryQueryStore store;
+    private InMemoryActionStore actionStore;
     private GameSubscriptionRegistry subscriptions;
     private GameWebSocketHandler handler;
     private RecordingWebSocketSession session;
@@ -49,9 +61,10 @@ class GameWebSocketHandlerTest {
     @BeforeEach
     void setUp() {
         store = new InMemoryQueryStore();
+        actionStore = new InMemoryActionStore();
         subscriptions = new GameSubscriptionRegistry(objectMapper);
         GameActionService actionService =
-                new GameActionService(new NoActionStore(), subscriptions::publish, Clock.systemUTC());
+                new GameActionService(actionStore, subscriptions::publish, Clock.fixed(NOW, ZoneOffset.UTC));
         handler = new GameWebSocketHandler(
                 new GameQueryService(store), actionService, subscriptions, objectMapper);
         session = new RecordingWebSocketSession(sessionId);
@@ -153,15 +166,132 @@ class GameWebSocketHandlerTest {
         assertThat(store.snapshotQueries).isZero();
     }
 
+    // ---------- ações da partida (EAP 2.9, 2.15.1) ----------
+
     @Test
-    void rejectsActionOnAnUnknownGame() throws Exception {
+    void appliesMoveAndAnswersWithTheResultingState() throws Exception {
+        actionStore.match = activeMatch();
+
         handler.handleTextMessage(session, new TextMessage("""
-                {"type":"game.move","requestId":"move-1","gameId":"%s","revision":0,"uci":"e2e4"}
+                {"type":"game.move","requestId":"move-1","gameId":"%s","revision":1,"uci":"e2e4"}
+                """.formatted(gameId)));
+
+        assertThat(session.messages).singleElement().satisfies(message -> {
+            JsonNode state = json(message);
+            assertThat(state.get("type").asText()).isEqualTo("game.state");
+            assertThat(state.get("requestId").asText()).isEqualTo("move-1");
+            assertThat(state.at("/snapshot/revision").asLong()).isEqualTo(2);
+            assertThat(state.at("/snapshot/position/lastMoveUci").asText()).isEqualTo("e2e4");
+            assertThat(state.at("/snapshot/position/sideToMove").asText()).isEqualTo("BLACK");
+        });
+    }
+
+    @Test
+    void rejectsIllegalMoveWithCorrelatedError() throws Exception {
+        actionStore.match = activeMatch();
+
+        handler.handleTextMessage(session, new TextMessage("""
+                {"type":"game.move","requestId":"move-2","gameId":"%s","revision":1,"uci":"e2e5"}
                 """.formatted(gameId)));
 
         assertThat(session.messages).singleElement().satisfies(message -> {
             JsonNode error = json(message);
-            assertThat(error.get("requestId").asText()).isEqualTo("move-1");
+            assertThat(error.get("requestId").asText()).isEqualTo("move-2");
+            assertThat(error.get("code").asText()).isEqualTo("ILLEGAL_MOVE");
+        });
+        assertThat(actionStore.saves).isZero();
+    }
+
+    @Test
+    void rejectsMoveCarryingAnOutdatedRevision() throws Exception {
+        actionStore.match = activeMatch();
+
+        handler.handleTextMessage(session, new TextMessage("""
+                {"type":"game.move","requestId":"move-3","gameId":"%s","revision":0,"uci":"e2e4"}
+                """.formatted(gameId)));
+
+        assertThat(session.messages).singleElement().satisfies(message -> {
+            JsonNode error = json(message);
+            assertThat(error.get("code").asText()).isEqualTo("STALE_REVISION");
+        });
+        assertThat(actionStore.saves).isZero();
+    }
+
+    @Test
+    void rejectsMoveOutsideUciNotation() throws Exception {
+        actionStore.match = activeMatch();
+
+        handler.handleTextMessage(session, new TextMessage("""
+                {"type":"game.move","requestId":"move-4","gameId":"%s","uci":"torre pra frente"}
+                """.formatted(gameId)));
+
+        assertThat(session.messages).singleElement().satisfies(message -> {
+            JsonNode error = json(message);
+            assertThat(error.get("code").asText()).isEqualTo("VALIDATION_ERROR");
+        });
+    }
+
+    @Test
+    void abandonFinishesTheGameInFavourOfTheOpponent() throws Exception {
+        actionStore.match = activeMatch();
+
+        handler.handleTextMessage(session, new TextMessage("""
+                {"type":"game.abandon","requestId":"abandon-1","gameId":"%s"}
+                """.formatted(gameId)));
+
+        assertThat(session.messages).singleElement().satisfies(message -> {
+            JsonNode state = json(message);
+            assertThat(state.at("/snapshot/status").asText()).isEqualTo("FINISHED");
+            assertThat(state.at("/snapshot/result/outcome").asText()).isEqualTo("BLACK_WIN");
+            assertThat(state.at("/snapshot/result/reason").asText()).isEqualTo("RESIGNATION");
+        });
+    }
+
+    @Test
+    void drawOfferIsRegisteredAndAnswerEndsTheGame() throws Exception {
+        actionStore.match = activeMatch();
+
+        handler.handleTextMessage(session, new TextMessage("""
+                {"type":"draw.offer","requestId":"draw-1","gameId":"%s","revision":1}
+                """.formatted(gameId)));
+
+        assertThat(json(session.messages.get(0)).at("/snapshot/drawOffer/offeredBy").asText())
+                .isEqualTo("WHITE");
+
+        // O oponente responde; o aceite vem da sessão das pretas.
+        RecordingWebSocketSession blackSession = new RecordingWebSocketSession(opponentSessionId);
+        handler.handleTextMessage(blackSession, new TextMessage("""
+                {"type":"draw.respond","requestId":"draw-2","gameId":"%s","accept":true,"revision":2}
+                """.formatted(gameId)));
+
+        assertThat(json(blackSession.messages.get(0)).at("/snapshot/result/reason").asText())
+                .isEqualTo("DRAW_AGREED");
+    }
+
+    @Test
+    void rejectsActionFromSessionThatDoesNotPlayTheGame() throws Exception {
+        actionStore.match = activeMatch();
+        RecordingWebSocketSession stranger = new RecordingWebSocketSession(UUID.randomUUID());
+
+        handler.handleTextMessage(stranger, new TextMessage("""
+                {"type":"game.move","requestId":"move-5","gameId":"%s","revision":1,"uci":"e2e4"}
+                """.formatted(gameId)));
+
+        assertThat(stranger.messages).singleElement().satisfies(message -> {
+            JsonNode error = json(message);
+            assertThat(error.get("code").asText()).isEqualTo("NOT_A_PARTICIPANT");
+        });
+        assertThat(actionStore.saves).isZero();
+    }
+
+    @Test
+    void rejectsActionOnAnUnknownGame() throws Exception {
+        handler.handleTextMessage(session, new TextMessage("""
+                {"type":"game.abandon","requestId":"abandon-2","gameId":"%s"}
+                """.formatted(gameId)));
+
+        assertThat(session.messages).singleElement().satisfies(message -> {
+            JsonNode error = json(message);
             assertThat(error.get("code").asText()).isEqualTo("GAME_NOT_FOUND");
         });
     }
@@ -209,17 +339,65 @@ class GameWebSocketHandlerTest {
                 null);
     }
 
-    /** Nenhuma partida carregada: as ações da partida ganham testes próprios na EAP 2.16.4. */
-    private static final class NoActionStore implements GameActionStore {
+    /** Partida em andamento com a sessão do teste jogando de brancas. */
+    private Match activeMatch() {
+        ChessPosition initial = ChessPosition.initial();
+        return Match.rehydrate(
+                new GameId(gameId),
+                GameStatus.ACTIVE,
+                TEN_MINUTES,
+                1,
+                List.of(
+                        new Game.Participant(Side.WHITE, sessionId, "HUMAN"),
+                        new Game.Participant(Side.BLACK, opponentSessionId, "HUMAN")),
+                initial,
+                MoveHistory.empty(),
+                null,
+                600_000,
+                600_000,
+                initial.sideToMove(),
+                NOW,
+                null,
+                null,
+                null);
+    }
+
+    private GameSnapshot snapshotOf(Match match) {
+        return new GameSnapshot(
+                gameId,
+                match.status(),
+                GameVisibility.PUBLIC,
+                null,
+                match.revision(),
+                List.of(
+                        new GameSnapshot.Player(Side.WHITE, "HUMAN"),
+                        new GameSnapshot.Player(Side.BLACK, "HUMAN")),
+                new GameSnapshot.Position(
+                        match.position().toFen(), match.position().sideToMove(), match.lastMoveUci()),
+                new GameSnapshot.Clock(
+                        match.whiteRemainingMs(), match.blackRemainingMs(), match.activeSide()),
+                match.drawOfferSide() == null ? null : new GameSnapshot.DrawOffer(match.drawOfferSide()),
+                match.resultOutcome() == null
+                        ? null
+                        : new GameSnapshot.Result(match.resultOutcome(), match.resultReason()));
+    }
+
+    /** Guarda a partida em memória e devolve o snapshot do estado gravado. */
+    private final class InMemoryActionStore implements GameActionStore {
+
+        private Match match;
+        private int saves;
 
         @Override
         public Optional<Match> findForUpdate(UUID requestedGameId) {
-            return Optional.empty();
+            return Optional.ofNullable(match).filter(held -> held.id().value().equals(requestedGameId));
         }
 
         @Override
-        public GameSnapshot save(Match match) {
-            throw new UnsupportedOperationException("not used in this test");
+        public GameSnapshot save(Match savedMatch) {
+            saves++;
+            match = savedMatch;
+            return snapshotOf(savedMatch);
         }
     }
 
