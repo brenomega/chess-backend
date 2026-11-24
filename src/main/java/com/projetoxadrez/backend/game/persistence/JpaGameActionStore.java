@@ -8,6 +8,7 @@ import com.projetoxadrez.backend.game.chess.MoveHistory;
 import com.projetoxadrez.backend.game.domain.Game;
 import com.projetoxadrez.backend.game.domain.GameId;
 import com.projetoxadrez.backend.game.domain.Match;
+import com.projetoxadrez.backend.game.domain.TimeControl;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
@@ -43,6 +44,7 @@ public class JpaGameActionStore implements GameActionStore {
         return Match.rehydrate(
                 new GameId(entity.getId()),
                 entity.getStatus(),
+                new TimeControl(entity.getInitialTimeMs(), entity.getIncrementMs()),
                 entity.getRevision(),
                 entity.getParticipants().stream()
                         .map(participant -> new Game.Participant(
@@ -51,6 +53,8 @@ public class JpaGameActionStore implements GameActionStore {
                 ChessPosition.fromFen(entity.getPositionFen()),
                 parseHistory(entity.getMoveHistory()),
                 entity.getLastMoveUci(),
+                entity.getWhiteRemainingMs(),
+                entity.getBlackRemainingMs(),
                 entity.getActiveSide(),
                 entity.getClockUpdatedAt(),
                 entity.getDrawOfferSide(),
