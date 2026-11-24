@@ -193,7 +193,7 @@ public class GameEntity {
         return participants;
     }
 
-    /** Grava o estado resultante de uma ação da partida (EAP 2.9, 2.11). */
+    /** Grava o estado resultante de uma ação da partida (EAP 2.9, 2.10, 2.11). */
     void applyMatchState(Match match) {
         if (!id.equals(match.id().value())) {
             throw new IllegalArgumentException("Cannot apply state from another game");
@@ -203,6 +203,8 @@ public class GameEntity {
         positionFen = match.position().toFen();
         moveHistory = String.join(" ", match.history().uciMoves());
         lastMoveUci = match.lastMoveUci();
+        whiteRemainingMs = match.whiteRemainingMs();
+        blackRemainingMs = match.blackRemainingMs();
         activeSide = match.activeSide();
         clockUpdatedAt = match.clockUpdatedAt();
         drawOfferSide = match.drawOfferSide();

@@ -6,6 +6,7 @@ import com.projetoxadrez.backend.game.chess.Move;
 import com.projetoxadrez.backend.game.chess.MoveHistory;
 import com.projetoxadrez.backend.game.chess.Side;
 import com.projetoxadrez.backend.game.chess.TerminalStateService;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
@@ -13,20 +14,21 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Partida em andamento: posição, histórico e resultado.
+ * Partida em andamento: posição, relógio e resultado.
  *
  * <p>Enquanto {@link Game} cobre a criação e a entrada de jogadores, este agregado concentra as
- * ações executadas durante a partida (EAP 2.9), a revisão das ações (2.11.1) e a autorização dos
- * participantes (2.13.1).
+ * ações executadas durante a partida (EAP 2.9), o relógio autoritativo (2.10), a revisão das ações
+ * (2.11.1) e a autorização dos participantes (2.13.1).
  *
- * <p>Toda ação aceita incrementa a revisão. Ações recebidas com revisão desatualizada são
- * rejeitadas, de modo que uma repetição atrasada não altera a partida.
+ * <p>Toda ação devolve um estado novo e incrementa a revisão. Ações recebidas com revisão
+ * desatualizada são rejeitadas, de modo que uma repetição atrasada não altera a partida.
  */
 public final class Match {
 
     private static final TerminalStateService TERMINAL_STATE = new TerminalStateService();
 
     private final GameId id;
+    private final TimeControl timeControl;
     private final List<Game.Participant> participants;
 
     private GameStatus status;
@@ -34,6 +36,8 @@ public final class Match {
     private ChessPosition position;
     private MoveHistory history;
     private String lastMoveUci;
+    private long whiteRemainingMs;
+    private long blackRemainingMs;
     private Side activeSide;
     private Instant clockUpdatedAt;
     private Side drawOfferSide;
@@ -45,11 +49,14 @@ public final class Match {
     private Match(
             GameId id,
             GameStatus status,
+            TimeControl timeControl,
             long revision,
             List<Game.Participant> participants,
             ChessPosition position,
             MoveHistory history,
             String lastMoveUci,
+            long whiteRemainingMs,
+            long blackRemainingMs,
             Side activeSide,
             Instant clockUpdatedAt,
             Side drawOfferSide,
@@ -57,11 +64,14 @@ public final class Match {
             String resultReason) {
         this.id = Objects.requireNonNull(id, "id must not be null");
         this.status = Objects.requireNonNull(status, "status must not be null");
+        this.timeControl = Objects.requireNonNull(timeControl, "timeControl must not be null");
         this.revision = revision;
         this.participants = List.copyOf(Objects.requireNonNull(participants, "participants must not be null"));
         this.position = Objects.requireNonNull(position, "position must not be null");
         this.history = Objects.requireNonNull(history, "history must not be null");
         this.lastMoveUci = lastMoveUci;
+        this.whiteRemainingMs = whiteRemainingMs;
+        this.blackRemainingMs = blackRemainingMs;
         this.activeSide = activeSide;
         this.clockUpdatedAt = clockUpdatedAt;
         this.drawOfferSide = drawOfferSide;
@@ -72,11 +82,14 @@ public final class Match {
     public static Match rehydrate(
             GameId id,
             GameStatus status,
+            TimeControl timeControl,
             long revision,
             List<Game.Participant> participants,
             ChessPosition position,
             MoveHistory history,
             String lastMoveUci,
+            long whiteRemainingMs,
+            long blackRemainingMs,
             Side activeSide,
             Instant clockUpdatedAt,
             Side drawOfferSide,
@@ -85,11 +98,14 @@ public final class Match {
         return new Match(
                 id,
                 status,
+                timeControl,
                 revision,
                 participants,
                 position,
                 history,
                 lastMoveUci,
+                whiteRemainingMs,
+                blackRemainingMs,
                 activeSide,
                 clockUpdatedAt,
                 drawOfferSide,
@@ -119,6 +135,14 @@ public final class Match {
 
     public String lastMoveUci() {
         return lastMoveUci;
+    }
+
+    public long whiteRemainingMs() {
+        return whiteRemainingMs;
+    }
+
+    public long blackRemainingMs() {
+        return blackRemainingMs;
     }
 
     public Side activeSide() {
@@ -172,7 +196,7 @@ public final class Match {
     public void applyMove(UUID sessionId, long expectedRevision, Move move, Instant now) {
         lastActionAt = now;
         Side side = requireParticipant(sessionId);
-        requireActive();
+        requireActive(now);
         requireTurn(side);
         requireRevision(expectedRevision);
 
@@ -180,17 +204,76 @@ public final class Match {
             throw new IllegalMoveException();
         }
 
+        chargeElapsed(now);
+        if (finishedByTimeout()) {
+            return;
+        }
+
         position = position.apply(move);
         history = history.append(move);
         lastMoveUci = move.toUci();
+        addIncrement(side);
         activeSide = position.sideToMove();
+        clockUpdatedAt = now;
         revision++;
 
         TERMINAL_STATE.result(position).ifPresent(this::finishWith);
     }
 
+    /**
+     * Encerra a partida se o tempo do lado da vez acabou (EAP 2.10.2). Devolve true quando o
+     * relógio decidiu a partida nesta chamada.
+     */
+    public boolean settleTimeout(Instant now) {
+        lastActionAt = now;
+        if (status != GameStatus.ACTIVE || timeControl.isInfinite() || activeSide == null) {
+            return false;
+        }
+        chargeElapsed(now);
+        return finishedByTimeout();
+    }
+
+    /** Desconta do lado da vez o tempo decorrido desde a última atualização (EAP 2.10.1). */
+    private void chargeElapsed(Instant now) {
+        if (timeControl.isInfinite() || activeSide == null || clockUpdatedAt == null) {
+            return;
+        }
+        long elapsedMs = Math.max(0, Duration.between(clockUpdatedAt, now).toMillis());
+        if (activeSide == Side.WHITE) {
+            whiteRemainingMs = Math.max(0, whiteRemainingMs - elapsedMs);
+        } else {
+            blackRemainingMs = Math.max(0, blackRemainingMs - elapsedMs);
+        }
+        clockUpdatedAt = now;
+    }
+
+    private boolean finishedByTimeout() {
+        if (timeControl.isInfinite() || activeSide == null) {
+            return false;
+        }
+        long remaining = activeSide == Side.WHITE ? whiteRemainingMs : blackRemainingMs;
+        if (remaining > 0) {
+            return false;
+        }
+        Side winner = activeSide.opposite();
+        Instant timeoutAt = clockUpdatedAt;
+        finish(winner == Side.WHITE ? "WHITE_WIN" : "BLACK_WIN", "TIMEOUT", timeoutAt);
+        return true;
+    }
+
+    private void addIncrement(Side side) {
+        if (timeControl.isInfinite() || timeControl.incrementMs() <= 0) {
+            return;
+        }
+        if (side == Side.WHITE) {
+            whiteRemainingMs += timeControl.incrementMs();
+        } else {
+            blackRemainingMs += timeControl.incrementMs();
+        }
+    }
+
     private void finishWith(ChessResult result) {
-        finish(result.outcome(), result.reason(), lastActionAt);
+        finish(result.outcome(), result.reason(), clockUpdatedAt);
     }
 
     /**
@@ -216,9 +299,14 @@ public final class Match {
                 .orElseThrow(NotAParticipantException::new);
     }
 
-    private void requireActive() {
+    /** A partida precisa estar em andamento; o relógio pode encerrá-la aqui. */
+    private void requireActive(Instant now) {
         if (status != GameStatus.ACTIVE) {
             throw new InvalidGameStateException();
+        }
+        chargeElapsed(now);
+        if (finishedByTimeout()) {
+            throw new GameTimedOutException();
         }
     }
 
@@ -228,7 +316,6 @@ public final class Match {
         }
     }
 
-    /** Revisão negativa significa "não verificar", para clientes que não a enviam (EAP 2.11.1). */
     private void requireRevision(long expectedRevision) {
         if (expectedRevision >= 0 && expectedRevision != revision) {
             throw new StaleRevisionException();
@@ -248,5 +335,8 @@ public final class Match {
     }
 
     public static final class IllegalMoveException extends RuntimeException {
+    }
+
+    public static final class GameTimedOutException extends RuntimeException {
     }
 }

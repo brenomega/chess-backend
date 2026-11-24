@@ -8,7 +8,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Ações executadas durante a partida (EAP 2.9).
+ * Ações executadas durante a partida: lance, abandono e empate (EAP 2.9).
  *
  * <p>Cada ação roda numa transação: a partida é carregada com trava, o agregado {@link Match}
  * decide, e o estado resultante é publicado aos participantes conectados. Quando a ação é
@@ -30,7 +30,7 @@ public class GameActionService {
         this.clock = clock;
     }
 
-    @Transactional
+    @Transactional(noRollbackFor = Match.GameTimedOutException.class)
     public GameSnapshot move(UUID gameId, UUID sessionId, long expectedRevision, String uci) {
         Match match = load(gameId);
         Move move;
@@ -39,7 +39,20 @@ public class GameActionService {
         } catch (IllegalArgumentException exception) {
             throw new InvalidMoveFormatException();
         }
-        match.applyMove(sessionId, expectedRevision, move, clock.instant());
+        return act(match, () -> match.applyMove(sessionId, expectedRevision, move, clock.instant()));
+    }
+
+    /**
+     * Executa a ação e grava. Se o relógio encerrou a partida, o fim é gravado e publicado mesmo
+     * com a ação rejeitada: o timeout é um fato novo, não um efeito da ação (EAP 2.10.2).
+     */
+    private GameSnapshot act(Match match, Runnable action) {
+        try {
+            action.run();
+        } catch (Match.GameTimedOutException exception) {
+            publish(match);
+            throw exception;
+        }
         return publish(match);
     }
 
