@@ -29,12 +29,25 @@ public class JpaGameQueryStore implements GameQueryStore {
                 .map(this::lobbyGame);
     }
 
+    /**
+     * Partida visível para a sessão: quem joga, sempre; qualquer um, quando a partida é entre duas
+     * IAs, que existe justamente para ser assistida (EAP 2.14.1).
+     */
     @Override
     public Optional<GameSnapshot> findSnapshot(UUID gameId, UUID sessionId) {
         return repository.findWithParticipantsById(gameId)
-                .filter(game -> game.getParticipants().stream()
-                        .anyMatch(participant -> sessionId.equals(participant.getSessionId())))
+                .filter(game -> plays(game, sessionId) || isSpectatable(game))
                 .map(snapshotFactory::snapshot);
+    }
+
+    private static boolean plays(GameEntity game, UUID sessionId) {
+        return game.getParticipants().stream()
+                .anyMatch(participant -> sessionId.equals(participant.getSessionId()));
+    }
+
+    private static boolean isSpectatable(GameEntity game) {
+        return game.getParticipants().stream()
+                .noneMatch(participant -> "HUMAN".equals(participant.getKind()));
     }
 
     @Override

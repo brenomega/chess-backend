@@ -1,10 +1,13 @@
 package com.projetoxadrez.backend.game.application;
 
+import com.projetoxadrez.backend.game.chess.Side;
 import com.projetoxadrez.backend.game.domain.Game;
 import com.projetoxadrez.backend.game.domain.GameEntryCode;
+import com.projetoxadrez.backend.game.domain.GameMode;
 import com.projetoxadrez.backend.game.domain.GameVisibility;
 import com.projetoxadrez.backend.game.domain.TimeControl;
 import java.time.Clock;
+import java.time.Instant;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -16,20 +19,43 @@ public class GameCreationService {
     private final GameEntryCodeGenerator entryCodeGenerator;
     private final Clock clock;
 
-    public GameCreationService(GameCreationStore store, GameEntryCodeGenerator entryCodeGenerator, Clock clock) {
+    public GameCreationService(
+            GameCreationStore store, GameEntryCodeGenerator entryCodeGenerator, Clock clock) {
         this.store = store;
         this.entryCodeGenerator = entryCodeGenerator;
         this.clock = clock;
     }
 
+    /**
+     * Cria a partida no modo pedido (EAP 2.14.1).
+     *
+     * <p>Modo ausente significa humano contra humano, o único que existia antes. Partidas com IA
+     * nascem ativas, já que não há segundo jogador para esperar.
+     */
     @Transactional
-    public GameSnapshot create(UUID creatorSessionId, GameVisibility visibility, TimeControl timeControl) {
-        if (visibility == null || timeControl == null) {
+    public GameSnapshot create(
+            UUID creatorSessionId, GameVisibility visibility, TimeControl timeControl, GameMode mode, Side side) {
+        if (timeControl == null) {
+            throw new InvalidGameCreationException();
+        }
+        GameMode resolvedMode = mode == null ? GameMode.HUMAN_VS_HUMAN : mode;
+        Instant now = clock.instant();
+        return switch (resolvedMode) {
+            case HUMAN_VS_HUMAN -> createBetweenHumans(creatorSessionId, visibility, timeControl, now);
+            case HUMAN_VS_AI -> store.create(
+                    Game.createAgainstAi(timeControl, creatorSessionId, side == null ? Side.WHITE : side, now),
+                    now);
+            case AI_VS_AI -> store.create(Game.createAiVersusAi(timeControl, now), now);
+        };
+    }
+
+    private GameSnapshot createBetweenHumans(
+            UUID creatorSessionId, GameVisibility visibility, TimeControl timeControl, Instant now) {
+        if (visibility == null) {
             throw new InvalidGameCreationException();
         }
         GameEntryCode entryCode = visibility == GameVisibility.PRIVATE ? availableEntryCode() : null;
-        Game game = Game.create(visibility, timeControl, creatorSessionId, entryCode);
-        return store.create(game, clock.instant());
+        return store.create(Game.create(visibility, timeControl, creatorSessionId, entryCode), now);
     }
 
     private GameEntryCode availableEntryCode() {

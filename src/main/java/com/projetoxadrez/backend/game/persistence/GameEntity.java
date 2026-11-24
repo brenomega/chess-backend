@@ -107,6 +107,8 @@ public class GameEntity {
         entity.blackRemainingMs = game.timeControl().initialTimeMs();
         entity.initialTimeMs = game.timeControl().initialTimeMs();
         entity.incrementMs = game.timeControl().incrementMs();
+        entity.activeSide = game.activeSide();
+        entity.clockUpdatedAt = game.clockUpdatedAt();
         entity.createdAt = createdAt;
         entity.updatedAt = createdAt;
         game.participants().stream()
