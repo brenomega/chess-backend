@@ -46,6 +46,9 @@ public class GameEntity {
     @Column(name = "last_move_uci")
     private String lastMoveUci;
 
+    @Column(name = "move_history", nullable = false)
+    private String moveHistory = "";
+
     @Column(name = "white_remaining_ms", nullable = false)
     private long whiteRemainingMs;
 
@@ -131,6 +134,11 @@ public class GameEntity {
 
     public String getPositionFen() {
         return positionFen;
+    }
+
+    /** Histórico da partida em UCI, separado por espaço, vazio antes do primeiro lance. */
+    public String getMoveHistory() {
+        return moveHistory == null ? "" : moveHistory;
     }
 
     public String getLastMoveUci() {
