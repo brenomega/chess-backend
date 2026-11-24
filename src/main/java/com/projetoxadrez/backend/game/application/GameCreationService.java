@@ -17,12 +17,17 @@ public class GameCreationService {
 
     private final GameCreationStore store;
     private final GameEntryCodeGenerator entryCodeGenerator;
+    private final AiTurnScheduler aiTurnScheduler;
     private final Clock clock;
 
     public GameCreationService(
-            GameCreationStore store, GameEntryCodeGenerator entryCodeGenerator, Clock clock) {
+            GameCreationStore store,
+            GameEntryCodeGenerator entryCodeGenerator,
+            AiTurnScheduler aiTurnScheduler,
+            Clock clock) {
         this.store = store;
         this.entryCodeGenerator = entryCodeGenerator;
+        this.aiTurnScheduler = aiTurnScheduler;
         this.clock = clock;
     }
 
@@ -30,7 +35,8 @@ public class GameCreationService {
      * Cria a partida no modo pedido (EAP 2.14.1).
      *
      * <p>Modo ausente significa humano contra humano, o único que existia antes. Partidas com IA
-     * nascem ativas, já que não há segundo jogador para esperar.
+     * nascem ativas, já que não há segundo jogador para esperar, e por isso o trabalho da IA é
+     * enfileirado aqui mesmo quando a vez já é dela.
      */
     @Transactional
     public GameSnapshot create(
@@ -40,13 +46,19 @@ public class GameCreationService {
         }
         GameMode resolvedMode = mode == null ? GameMode.HUMAN_VS_HUMAN : mode;
         Instant now = clock.instant();
-        return switch (resolvedMode) {
-            case HUMAN_VS_HUMAN -> createBetweenHumans(creatorSessionId, visibility, timeControl, now);
-            case HUMAN_VS_AI -> store.create(
-                    Game.createAgainstAi(timeControl, creatorSessionId, side == null ? Side.WHITE : side, now),
-                    now);
-            case AI_VS_AI -> store.create(Game.createAiVersusAi(timeControl, now), now);
-        };
+        GameSnapshot snapshot =
+                switch (resolvedMode) {
+                    case HUMAN_VS_HUMAN -> createBetweenHumans(creatorSessionId, visibility, timeControl, now);
+                    case HUMAN_VS_AI -> store.create(
+                            Game.createAgainstAi(
+                                    timeControl, creatorSessionId, side == null ? Side.WHITE : side, now),
+                            now);
+                    case AI_VS_AI -> store.create(Game.createAiVersusAi(timeControl, now), now);
+                };
+        if (resolvedMode.hasAi()) {
+            aiTurnScheduler.syncAiTurn(snapshot);
+        }
+        return snapshot;
     }
 
     private GameSnapshot createBetweenHumans(

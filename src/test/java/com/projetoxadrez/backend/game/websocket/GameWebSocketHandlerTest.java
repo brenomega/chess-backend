@@ -64,7 +64,8 @@ class GameWebSocketHandlerTest {
         actionStore = new InMemoryActionStore();
         subscriptions = new GameSubscriptionRegistry(objectMapper);
         GameActionService actionService =
-                new GameActionService(actionStore, subscriptions::publish, Clock.fixed(NOW, ZoneOffset.UTC));
+                new GameActionService(
+                        actionStore, subscriptions::publish, snapshot -> {}, Clock.fixed(NOW, ZoneOffset.UTC));
         handler = new GameWebSocketHandler(
                 new GameQueryService(store), actionService, subscriptions, objectMapper);
         session = new RecordingWebSocketSession(sessionId);
