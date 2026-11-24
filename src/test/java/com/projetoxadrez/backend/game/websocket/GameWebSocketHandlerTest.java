@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.projetoxadrez.backend.game.application.GameActionService;
+import com.projetoxadrez.backend.game.application.GameActionStore;
 import com.projetoxadrez.backend.game.application.GameQueryService;
 import com.projetoxadrez.backend.game.application.GameQueryStore;
 import com.projetoxadrez.backend.game.application.GameSnapshot;
@@ -11,10 +13,12 @@ import com.projetoxadrez.backend.game.application.LobbyGame;
 import com.projetoxadrez.backend.game.chess.Side;
 import com.projetoxadrez.backend.game.domain.GameStatus;
 import com.projetoxadrez.backend.game.domain.GameVisibility;
+import com.projetoxadrez.backend.game.domain.Match;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.security.Principal;
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -46,7 +50,10 @@ class GameWebSocketHandlerTest {
     void setUp() {
         store = new InMemoryQueryStore();
         subscriptions = new GameSubscriptionRegistry(objectMapper);
-        handler = new GameWebSocketHandler(new GameQueryService(store), subscriptions, objectMapper);
+        GameActionService actionService =
+                new GameActionService(new NoActionStore(), subscriptions::publish, Clock.systemUTC());
+        handler = new GameWebSocketHandler(
+                new GameQueryService(store), actionService, subscriptions, objectMapper);
         session = new RecordingWebSocketSession(sessionId);
     }
 
@@ -133,7 +140,21 @@ class GameWebSocketHandlerTest {
     }
 
     @Test
-    void rejectsCommandsOutsideSubscriptionScope() throws Exception {
+    void rejectsUnknownMessageTypeOutsideTheContract() throws Exception {
+        handler.handleTextMessage(session, new TextMessage("""
+                {"type":"game.rewind","requestId":"rewind-1","gameId":"%s"}
+                """.formatted(gameId)));
+
+        assertThat(session.messages).singleElement().satisfies(message -> {
+            JsonNode error = json(message);
+            assertThat(error.get("requestId").asText()).isEqualTo("rewind-1");
+            assertThat(error.get("code").asText()).isEqualTo("UNSUPPORTED_MESSAGE");
+        });
+        assertThat(store.snapshotQueries).isZero();
+    }
+
+    @Test
+    void rejectsActionOnAnUnknownGame() throws Exception {
         handler.handleTextMessage(session, new TextMessage("""
                 {"type":"game.move","requestId":"move-1","gameId":"%s","revision":0,"uci":"e2e4"}
                 """.formatted(gameId)));
@@ -141,9 +162,8 @@ class GameWebSocketHandlerTest {
         assertThat(session.messages).singleElement().satisfies(message -> {
             JsonNode error = json(message);
             assertThat(error.get("requestId").asText()).isEqualTo("move-1");
-            assertThat(error.get("code").asText()).isEqualTo("UNSUPPORTED_MESSAGE");
+            assertThat(error.get("code").asText()).isEqualTo("GAME_NOT_FOUND");
         });
-        assertThat(store.snapshotQueries).isZero();
     }
 
     @Test
@@ -187,6 +207,20 @@ class GameWebSocketHandlerTest {
                 new GameSnapshot.Clock(600_000, 600_000, status == GameStatus.ACTIVE ? Side.WHITE : null),
                 null,
                 null);
+    }
+
+    /** Nenhuma partida carregada: as ações da partida ganham testes próprios na EAP 2.16.4. */
+    private static final class NoActionStore implements GameActionStore {
+
+        @Override
+        public Optional<Match> findForUpdate(UUID requestedGameId) {
+            return Optional.empty();
+        }
+
+        @Override
+        public GameSnapshot save(Match match) {
+            throw new UnsupportedOperationException("not used in this test");
+        }
     }
 
     private static final class InMemoryQueryStore implements GameQueryStore {
