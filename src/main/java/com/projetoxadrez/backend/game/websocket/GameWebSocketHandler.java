@@ -133,6 +133,8 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
             subscriptions.sendError(session, requestId, "NOT_A_PARTICIPANT", "Not a game participant");
         } catch (Match.InvalidGameStateException exception) {
             subscriptions.sendError(session, requestId, "INVALID_GAME_STATE", "Game is not active");
+        } catch (Match.GameTimedOutException exception) {
+            subscriptions.sendError(session, requestId, "INVALID_GAME_STATE", "Game ended on time");
         } catch (Match.NotYourTurnException exception) {
             subscriptions.sendError(session, requestId, "NOT_YOUR_TURN", "It is not your turn");
         } catch (Match.StaleRevisionException exception) {
