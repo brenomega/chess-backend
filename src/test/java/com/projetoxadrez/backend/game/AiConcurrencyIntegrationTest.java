@@ -186,10 +186,13 @@ class AiConcurrencyIntegrationTest {
         assertValidationError(post("/v1/ai/jobs/next", unpairedHighSurrogate, null));
         assertValidationError(next(maxLengthWorkerId + "a"));
         assertValidationError(next("worker\0id"));
+        assertValidationError(postRawJson("/v1/ai/jobs/next", "{\"workerId\":\"owner\"} lixo", null));
         assertThat(jobState(pendingJob, "status")).isEqualTo("PENDING");
         assertThat(jobState(pendingJob, "worker_id")).isNull();
+        assertThat(jobState(pendingJob, "expires_at")).isNull();
         assertThat(gameState(game.id(), "revision")).isEqualTo("0");
         assertThat(gameState(game.id(), "move_history")).isNullOrEmpty();
+        verify(subscriptions, never()).publish(any());
 
         Job claimed = claim(maxLengthWorkerId);
         assertThat(claimed.id()).isEqualTo(pendingJob);
@@ -225,8 +228,10 @@ class AiConcurrencyIntegrationTest {
         assertError(postResult(payload.deepCopy().put("revision", 1)), 409, "STALE_REVISION");
         assertError(result(owner, job, "e2e5"), 422, "ILLEGAL_MOVE");
         assertError(result(owner, job, BLANK_UCI), 400, "INVALID_CANDIDATE");
+        assertValidationError(postRawJson("/v1/ai/jobs/result", payload + " {}", null));
         assertThat(jobState(job.id(), "status")).isEqualTo("ASSIGNED");
         assertThat(jobState(job.id(), "worker_id")).isEqualTo(owner);
+        assertThat(openRevisions(game.id())).containsExactly(0L);
         assertThat(gameState(game.id(), "revision")).isEqualTo("0");
         assertThat(gameState(game.id(), "move_history")).isNullOrEmpty();
         verify(subscriptions, never()).publish(any());
@@ -566,19 +571,23 @@ class AiConcurrencyIntegrationTest {
     }
 
     private ApiResponse post(String path, JsonNode body, String token) {
+        return postRawJson(path, body == null ? null : body.toString(), token);
+    }
+
+    private ApiResponse postRawJson(String path, String body, String token) {
         return response(send(postRequest(path, body, token)));
     }
 
     private CompletableFuture<ApiResponse> sendAsync(String path, JsonNode body) {
-        return send(postRequest(path, body, null));
+        return send(postRequest(path, body.toString(), null));
     }
 
-    private HttpRequest postRequest(String path, JsonNode body, String token) {
+    private HttpRequest postRequest(String path, String body, String token) {
         HttpRequest.Builder builder = request(path, token);
         return body == null
                 ? builder.POST(HttpRequest.BodyPublishers.noBody()).build()
                 : builder.header("Content-Type", "application/json")
-                        .POST(HttpRequest.BodyPublishers.ofString(body.toString())).build();
+                        .POST(HttpRequest.BodyPublishers.ofString(body)).build();
     }
 
     private HttpRequest.Builder request(String path, String token) {
