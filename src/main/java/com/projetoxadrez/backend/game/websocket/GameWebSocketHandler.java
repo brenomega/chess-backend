@@ -108,9 +108,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
             return;
         }
         try {
-            GameSnapshot snapshot = queryService.game(gameId, sessionId);
-            subscriptions.subscribe(session, gameId);
-            subscriptions.sendState(session, requestId, snapshot);
+            subscriptions.subscribe(session, gameId, requestId, () -> queryService.game(gameId, sessionId));
         } catch (GameQueryService.GameNotFoundException exception) {
             subscriptions.sendError(session, requestId, "GAME_NOT_FOUND", "Game not found");
         } catch (GameQueryService.NotAGameParticipantException exception) {
@@ -118,10 +116,6 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
-    /**
-     * Executa uma ação da partida e devolve o estado resultante, traduzindo as recusas do domínio
-     * para os códigos do protocolo (EAP 2.15.1).
-     */
     private void action(WebSocketSession session, String requestId, JsonNode message, GameAction gameAction)
             throws IOException {
         UUID gameId = gameId(session, requestId, message);
@@ -173,7 +167,6 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
-    /** Revisão esperada pelo cliente; ausente significa "não verificar" (EAP 2.11.1). */
     private static long revision(JsonNode message) {
         JsonNode value = message.get("revision");
         return value != null && value.canConvertToLong() ? value.longValue() : GameActionService.ANY_REVISION;

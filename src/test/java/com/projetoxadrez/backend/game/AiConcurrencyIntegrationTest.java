@@ -24,10 +24,12 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.WebSocket;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
@@ -191,6 +193,7 @@ class AiConcurrencyIntegrationTest {
         assertValidationError(post("/v1/ai/jobs/next", unpairedHighSurrogate, null));
         assertValidationError(next(maxLengthWorkerId + "a"));
         assertValidationError(next("worker\0id"));
+        assertValidationError(next(" \u00A0\u0085"));
         assertValidationError(postRawJson("/v1/ai/jobs/next", "{\"workerId\":\"owner\"} lixo", null));
         assertValidationError(postMalformedUtf8("/v1/ai/jobs/next",
                 objectMapper.createObjectNode().put("workerId", WORKER_ID_WITH_OVERLONG_ONE)));
@@ -226,6 +229,10 @@ class AiConcurrencyIntegrationTest {
                 .putRawValue("workerId", new RawValue("\"worker-\\uDC00\""));
         assertValidationError(postResult(unpairedLowSurrogate));
         assertValidationError(postResult(payload.deepCopy().put("jobId", "not-a-uuid")));
+        String encodedJob = Base64.getEncoder().encodeToString(uuidBytes(job.id()));
+        String encodedGame = Base64.getUrlEncoder().withoutPadding().encodeToString(uuidBytes(game.id()));
+        assertValidationError(postResult(payload.deepCopy().put("jobId", encodedJob)));
+        assertValidationError(postResult(payload.deepCopy().put("gameId", encodedGame)));
         ObjectNode missingRevision = payload.deepCopy();
         missingRevision.remove("revision");
         assertValidationError(postResult(missingRevision));
@@ -259,6 +266,7 @@ class AiConcurrencyIntegrationTest {
         assertThat(applied.body().path("gameId").asText()).isEqualTo(game.id().toString());
         assertThat(applied.body().path("revision").asLong()).isEqualTo(1);
         assertThat(result(owner, job, "e2e4")).isEqualTo(applied);
+        assertValidationError(postResult(payload.deepCopy().put("jobId", encodedJob)));
         assertError(result("stranger", job, "e2e4"), 409, "WORKER_OWNERSHIP_CONFLICT");
         assertError(result(owner, job, "d2d4"), 409, "JOB_ALREADY_COMPLETED");
 
@@ -367,19 +375,48 @@ class AiConcurrencyIntegrationTest {
         verify(subscriptions, never()).publish(any());
     }
 
-    @Test
-    void publishesAndQueuesThePersistedTurnWhenTheNextClockReachesZeroDuringTheResult() {
+    @ParameterizedTest
+    @ValueSource(longs = {1, 2})
+    void publishesThePersistedTurnWithoutReplacingALaterClockProjection(long blackRemainingMs) {
         Session spectator = createSession();
         CreatedGame game = createGame(spectator, "AI_VS_AI", null, "PUBLIC");
-        jdbc.update("UPDATE chess.game SET black_remaining_ms = 1 WHERE id = ?", game.id());
+        jdbc.update("UPDATE chess.game SET black_remaining_ms = ? WHERE id = ?", blackRemainingMs, game.id());
         Job job = claim("owner");
         BlockingQueue<String> messages = new LinkedBlockingQueue<>();
+        BlockingQueue<String> projectedMessages = new LinkedBlockingQueue<>();
         WebSocket socket = connect(spectator, messages);
+        WebSocket projectedSocket = connect(spectator, projectedMessages);
+        CompletableFuture<Void> moveCommitted = new CompletableFuture<>();
+        CompletableFuture<Void> releasePublication = new CompletableFuture<>();
         try {
             socketExchange(socket, messages, "game.subscribe", game.id());
             when(clock.instant()).thenReturn(START, START, START.plusMillis(1));
+            CompletableFuture<AiJobService.AiJobOutcome> result = CompletableFuture.supplyAsync(
+                    () -> transaction.execute(status -> {
+                        pausePublicationAfterCommit(moveCommitted, releasePublication);
+                        return aiJobs.result("owner", job.id(), game.id(), 0, "e2e4");
+                    }));
 
-            assertThat(result("owner", job, "e2e4").status()).isEqualTo(200);
+            moveCommitted.orTimeout(5, TimeUnit.SECONDS).join();
+            verify(subscriptions, never()).publish(any());
+            JsonNode projected = socketExchange(projectedSocket, projectedMessages, "game.subscribe", game.id())
+                    .path("snapshot");
+            assertThat(projected.path("revision").asLong()).isEqualTo(1);
+            assertThat(projected.at("/clock/blackRemainingMs").asLong()).isEqualTo(blackRemainingMs - 1);
+            if (blackRemainingMs == 1) {
+                assertThat(projected.path("status").asText()).isEqualTo("FINISHED");
+                assertThat(projected.at("/result/outcome").asText()).isEqualTo("WHITE_WIN");
+                assertThat(projected.at("/result/reason").asText()).isEqualTo("TIMEOUT");
+                assertThat(projected.at("/clock/activeSide").isNull()).isTrue();
+            } else {
+                assertThat(projected.path("status").asText()).isEqualTo("ACTIVE");
+                assertThat(projected.at("/clock/activeSide").asText()).isEqualTo("BLACK");
+            }
+
+            releasePublication.complete(null);
+            assertThat(result.orTimeout(5, TimeUnit.SECONDS).join().revision()).isEqualTo(1);
+            JsonNode current = socketExchange(projectedSocket, projectedMessages, "game.subscribe", game.id());
+            assertThat(current.path("snapshot")).isEqualTo(projected);
 
             JsonNode event = readSocketMessage(messages);
             JsonNode snapshot = event.path("snapshot");
@@ -389,11 +426,11 @@ class AiConcurrencyIntegrationTest {
             assertThat(snapshot.path("result").isNull()).isTrue();
             assertThat(snapshot.path("revision").asLong()).isEqualTo(1);
             assertThat(snapshot.at("/clock/activeSide").asText()).isEqualTo("BLACK");
-            assertThat(snapshot.at("/clock/blackRemainingMs").asLong()).isEqualTo(1);
+            assertThat(snapshot.at("/clock/blackRemainingMs").asLong()).isEqualTo(blackRemainingMs);
             assertThat(gameState(game.id(), "status")).isEqualTo("ACTIVE");
             assertThat(gameState(game.id(), "revision")).isEqualTo("1");
             assertThat(gameState(game.id(), "move_history")).isEqualTo("e2e4");
-            assertThat(gameState(game.id(), "black_remaining_ms")).isEqualTo("1");
+            assertThat(gameState(game.id(), "black_remaining_ms")).isEqualTo(Long.toString(blackRemainingMs));
             assertThat(jobState(job.id(), "status")).isEqualTo("COMPLETED");
 
             Job reply = claim("next-worker");
@@ -401,6 +438,56 @@ class AiConcurrencyIntegrationTest {
             assertThat(reply.revision()).isEqualTo(1);
             assertThat(reply.body().at("/position/sideToMove").asText()).isEqualTo("BLACK");
         } finally {
+            releasePublication.complete(null);
+            socket.abort();
+            projectedSocket.abort();
+        }
+    }
+
+    @Test
+    void includesCheckmateCommittedDuringTheFirstSubscriptionInItsCorrelatedResponse() {
+        Session spectator = createSession();
+        CreatedGame game = createGame(spectator, "AI_VS_AI", null, "PUBLIC");
+        String worker = "owner";
+        assertThat(result(worker, claim(worker), "f2f3").status()).isEqualTo(200);
+        assertThat(result(worker, claim(worker), "e7e5").status()).isEqualTo(200);
+        assertThat(result(worker, claim(worker), "g2g4").status()).isEqualTo(200);
+        Job matingTurn = claim(worker);
+
+        BlockingQueue<String> messages = new LinkedBlockingQueue<>();
+        WebSocket socket = connect(spectator, messages);
+        CompletableFuture<Void> activeSnapshotRead = new CompletableFuture<>();
+        CompletableFuture<Void> resumeSubscription = new CompletableFuture<>();
+        try {
+            when(clock.instant()).thenAnswer(invocation -> {
+                if (activeSnapshotRead.complete(null)) {
+                    resumeSubscription.orTimeout(15, TimeUnit.SECONDS).join();
+                }
+                return now.get();
+            });
+
+            sendSocketCommand(socket, "game.subscribe", game.id());
+            activeSnapshotRead.orTimeout(5, TimeUnit.SECONDS).join();
+            assertThat(gameState(game.id(), "status")).isEqualTo("ACTIVE");
+            assertThat(result(worker, matingTurn, "d8h4").status()).isEqualTo(200);
+            verify(subscriptions).publish(argThat(snapshot ->
+                    snapshot.gameId().equals(game.id()) && snapshot.revision() == 5));
+            assertThat(gameState(game.id(), "status")).isEqualTo("FINISHED");
+            assertThat(gameState(game.id(), "move_history")).isEqualTo("f2f3 e7e5 g2g4 d8h4");
+            assertThat(jobState(matingTurn.id(), "status")).isEqualTo("COMPLETED");
+            assertThat(openRevisions(game.id())).isEmpty();
+
+            resumeSubscription.complete(null);
+            JsonNode response = readSocketMessage(messages);
+            assertThat(response.path("type").asText()).isEqualTo("game.state");
+            assertThat(response.path("requestId").asText()).isEqualTo("game.subscribe");
+            assertThat(response.at("/snapshot/gameId").asText()).isEqualTo(game.id().toString());
+            assertThat(response.at("/snapshot/revision").asLong()).isEqualTo(5);
+            assertThat(response.at("/snapshot/status").asText()).isEqualTo("FINISHED");
+            assertThat(response.at("/snapshot/result/outcome").asText()).isEqualTo("BLACK_WIN");
+            assertThat(response.at("/snapshot/result/reason").asText()).isEqualTo("CHECKMATE");
+        } finally {
+            resumeSubscription.complete(null);
             socket.abort();
         }
     }
@@ -424,18 +511,7 @@ class AiConcurrencyIntegrationTest {
             assertThat(initial.at("/snapshot/revision").asLong()).isEqualTo(2);
             CompletableFuture<AiJobService.AiJobOutcome> whiteResult = CompletableFuture.supplyAsync(
                     () -> transaction.execute(status -> {
-                        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                            @Override
-                            public int getOrder() {
-                                return Ordered.HIGHEST_PRECEDENCE;
-                            }
-
-                            @Override
-                            public void afterCommit() {
-                                whiteCommitted.complete(null);
-                                releaseWhitePublication.orTimeout(20, TimeUnit.SECONDS).join();
-                            }
-                        });
+                        pausePublicationAfterCommit(whiteCommitted, releaseWhitePublication);
                         return aiJobs.result(whiteWorker, white.id(), game.id(), 2, "g2g4");
                     }));
 
@@ -481,6 +557,10 @@ class AiConcurrencyIntegrationTest {
         ObjectNode missingUci = resultPayload("owner", job, "e2e4");
         missingUci.remove("uci");
         assertValidationError(postResult(missingUci));
+        assertValidationError(postResult(resultPayload("owner", job, "e2e4").put("uci", 1234)));
+        assertThat(gameState(game.id(), "status")).isEqualTo("ACTIVE");
+        assertThat(jobState(job.id(), "status")).isEqualTo("ASSIGNED");
+        verify(subscriptions, never()).publish(any());
         assertError(result("owner", job, BLANK_UCI), 422, "INVALID_GAME_STATE");
 
         assertThat(gameState(game.id(), "status")).isEqualTo("FINISHED");
@@ -494,6 +574,22 @@ class AiConcurrencyIntegrationTest {
                 snapshot.gameId().equals(game.id()) && snapshot.revision() == 1
                         && snapshot.result() != null && snapshot.result().reason().equals("TIMEOUT")));
         verify(subscriptions).publish(any());
+    }
+
+    private static void pausePublicationAfterCommit(
+            CompletableFuture<Void> committed, CompletableFuture<Void> releasePublication) {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public int getOrder() {
+                return Ordered.HIGHEST_PRECEDENCE;
+            }
+
+            @Override
+            public void afterCommit() {
+                committed.complete(null);
+                releasePublication.orTimeout(20, TimeUnit.SECONDS).join();
+            }
+        });
     }
 
     private <T> T whileResultWaits(Job job, Supplier<T> action, String expectedError) {
@@ -574,12 +670,16 @@ class AiConcurrencyIntegrationTest {
     }
 
     private JsonNode socketExchange(WebSocket socket, BlockingQueue<String> messages, String type, UUID gameId) {
-        ObjectNode message = objectMapper.createObjectNode().put("type", type).put("requestId", type)
-                .put("gameId", gameId.toString()).put("uci", "e2e4").put("accept", true);
-        socket.sendText(message.toString(), true).orTimeout(5, TimeUnit.SECONDS).join();
+        sendSocketCommand(socket, type, gameId);
         JsonNode response = readSocketMessage(messages);
         assertThat(response.path("requestId").asText()).isEqualTo(type);
         return response;
+    }
+
+    private void sendSocketCommand(WebSocket socket, String type, UUID gameId) {
+        ObjectNode message = objectMapper.createObjectNode().put("type", type).put("requestId", type)
+                .put("gameId", gameId.toString()).put("uci", "e2e4").put("accept", true);
+        socket.sendText(message.toString(), true).orTimeout(5, TimeUnit.SECONDS).join();
     }
 
     private JsonNode readSocketMessage(BlockingQueue<String> messages) {
@@ -639,6 +739,10 @@ class AiConcurrencyIntegrationTest {
     private ObjectNode resultPayload(String workerId, Job job, String uci) {
         return objectMapper.createObjectNode().put("workerId", workerId).put("jobId", job.id().toString())
                 .put("gameId", job.gameId().toString()).put("revision", job.revision()).put("uci", uci);
+    }
+
+    private static byte[] uuidBytes(UUID id) {
+        return ByteBuffer.allocate(16).putLong(id.getMostSignificantBits()).putLong(id.getLeastSignificantBits()).array();
     }
 
     private ApiResponse get(String path, Session session) {

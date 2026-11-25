@@ -3,10 +3,12 @@ package com.projetoxadrez.backend.game.websocket;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.projetoxadrez.backend.game.application.GameSnapshot;
+import com.projetoxadrez.backend.game.domain.GameStatus;
 import java.io.IOException;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
@@ -14,41 +16,97 @@ import org.springframework.web.socket.WebSocketSession;
 @Component
 public class GameSubscriptionRegistry {
 
-    private final Map<String, Subscription> subscriptions = new ConcurrentHashMap<>();
+    private final Map<String, Connection> connections = new ConcurrentHashMap<>();
     private final ObjectMapper objectMapper;
 
     public GameSubscriptionRegistry(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
     }
 
-    void subscribe(WebSocketSession session, UUID gameId) {
+    void subscribe(WebSocketSession session, UUID gameId, String requestId, Supplier<GameSnapshot> authorizedSnapshot)
+            throws IOException {
+        String sessionId = session.getId();
+        Subscription pending = new Subscription(gameId);
+        Connection initializing;
         synchronized (session) {
-            subscriptions.compute(session.getId(), (id, current) ->
-                    current != null && current.gameId.equals(gameId) ? current : new Subscription(session, gameId));
+            initializing = new Connection(session, activeSubscription(session), pending);
+            connections.put(sessionId, initializing);
+        }
+
+        try {
+            GameSnapshot snapshot = authorizedSnapshot.get();
+            synchronized (session) {
+                if (connections.get(sessionId) != initializing) {
+                    return;
+                }
+                Subscription active = initializing.active();
+                if (follows(active, gameId) && isOlderThan(snapshot, active.latest)) {
+                    snapshot = active.latest;
+                }
+                if (isOlderThan(snapshot, pending.latest)) {
+                    snapshot = pending.latest;
+                }
+                sendStateMessage(session, requestId, snapshot);
+                pending.latest = snapshot;
+                connections.put(sessionId, new Connection(session, pending, null));
+            }
+        } finally {
+            synchronized (session) {
+                if (connections.get(sessionId) == initializing) {
+                    if (initializing.active() == null) {
+                        connections.remove(sessionId);
+                    } else {
+                        connections.put(sessionId, new Connection(session, initializing.active(), null));
+                    }
+                }
+            }
         }
     }
 
     void remove(WebSocketSession session) {
-        subscriptions.remove(session.getId());
+        synchronized (session) {
+            connections.remove(session.getId());
+        }
     }
 
     void sendState(WebSocketSession session, String requestId, GameSnapshot snapshot) throws IOException {
         synchronized (session) {
-            Subscription subscription = subscriptions.get(session.getId());
-            if (subscription != null && subscription.gameId.equals(snapshot.gameId())) {
-                GameSnapshot lastSent = subscription.lastSent;
-                if (lastSent != null && snapshot.revision() < lastSent.revision()) {
-                    if (requestId == null) {
-                        return;
-                    }
-                    snapshot = lastSent;
-                }
-                sendStateMessage(session, requestId, snapshot);
-                subscription.lastSent = snapshot;
-            } else if (requestId != null) {
+            Subscription active = activeSubscription(session);
+            if (follows(active, snapshot.gameId())) {
+                sendSubscribedState(session, requestId, snapshot, active);
+            } else {
                 sendStateMessage(session, requestId, snapshot);
             }
         }
+    }
+
+    private Subscription activeSubscription(WebSocketSession session) {
+        Connection connection = connections.get(session.getId());
+        return connection == null ? null : connection.active();
+    }
+
+    private void sendSubscribedState(
+            WebSocketSession session, String requestId, GameSnapshot snapshot, Subscription active) throws IOException {
+        if (isOlderThan(snapshot, active.latest)) {
+            if (requestId == null) {
+                return;
+            }
+            snapshot = active.latest;
+        }
+        sendStateMessage(session, requestId, snapshot);
+        active.latest = snapshot;
+    }
+
+    private static boolean isOlderThan(GameSnapshot snapshot, GameSnapshot latest) {
+        if (latest == null) {
+            return false;
+        }
+        if (snapshot.revision() != latest.revision()) {
+            return snapshot.revision() < latest.revision();
+        }
+        return (latest.status() == GameStatus.FINISHED && snapshot.status() != GameStatus.FINISHED)
+                || snapshot.clock().whiteRemainingMs() > latest.clock().whiteRemainingMs()
+                || snapshot.clock().blackRemainingMs() > latest.clock().blackRemainingMs();
     }
 
     private void sendStateMessage(WebSocketSession session, String requestId, GameSnapshot snapshot) throws IOException {
@@ -73,17 +131,35 @@ public class GameSubscriptionRegistry {
     }
 
     public void publish(GameSnapshot snapshot) {
-        subscriptions.values().stream()
-                .filter(subscription -> subscription.gameId.equals(snapshot.gameId()))
-                .forEach(subscription -> publish(subscription, snapshot));
+        connections.values().stream()
+                .filter(connection -> follows(connection.active(), snapshot.gameId())
+                        || follows(connection.pending(), snapshot.gameId()))
+                .forEach(connection -> publish(connection.session(), snapshot));
     }
 
-    private void publish(Subscription subscription, GameSnapshot snapshot) {
-        try {
-            sendState(subscription.session, null, snapshot);
-        } catch (IOException | RuntimeException exception) {
-            subscriptions.remove(subscription.session.getId(), subscription);
+    private void publish(WebSocketSession session, GameSnapshot snapshot) {
+        synchronized (session) {
+            Connection connection = connections.get(session.getId());
+            if (connection == null) {
+                return;
+            }
+            Subscription pending = connection.pending();
+            if (follows(pending, snapshot.gameId()) && !isOlderThan(snapshot, pending.latest)) {
+                pending.latest = snapshot;
+            }
+            Subscription active = connection.active();
+            if (follows(active, snapshot.gameId())) {
+                try {
+                    sendSubscribedState(session, null, snapshot, active);
+                } catch (IOException | RuntimeException exception) {
+                    connections.remove(session.getId());
+                }
+            }
         }
+    }
+
+    private static boolean follows(Subscription subscription, UUID gameId) {
+        return subscription != null && subscription.gameId.equals(gameId);
     }
 
     private void send(WebSocketSession session, ObjectNode message) throws IOException {
@@ -95,13 +171,14 @@ public class GameSubscriptionRegistry {
         }
     }
 
-    private static final class Subscription {
-        private final WebSocketSession session;
-        private final UUID gameId;
-        private GameSnapshot lastSent;
+    private record Connection(WebSocketSession session, Subscription active, Subscription pending) {
+    }
 
-        private Subscription(WebSocketSession session, UUID gameId) {
-            this.session = session;
+    private static final class Subscription {
+        private final UUID gameId;
+        private GameSnapshot latest;
+
+        private Subscription(UUID gameId) {
             this.gameId = gameId;
         }
     }
