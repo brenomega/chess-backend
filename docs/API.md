@@ -97,10 +97,10 @@ O cliente conecta em `GET /ws` com `X-Session-Token`. O upgrade exige uma sessã
 | Direção | Tipo | Campos adicionais |
 | --- | --- | --- |
 | cliente -> servidor | `game.subscribe` | `gameId` |
-| cliente -> servidor | `game.move` | `gameId`, `uci`, `revision` opcional |
-| cliente -> servidor | `game.abandon` | `gameId`, `revision` opcional |
-| cliente -> servidor | `draw.offer` | `gameId`, `revision` opcional |
-| cliente -> servidor | `draw.respond` | `gameId`, `accept`, `revision` opcional |
+| cliente -> servidor | `game.move` | `gameId`, `uci`, `revision` |
+| cliente -> servidor | `game.abandon` | `gameId`, `revision` |
+| cliente -> servidor | `draw.offer` | `gameId`, `revision` |
+| cliente -> servidor | `draw.respond` | `gameId`, `accept`, `revision` |
 | servidor -> cliente | `game.state` | `requestId` opcional, `snapshot` |
 | servidor -> cliente | `game.error` | `requestId` opcional, `code`, `message` |
 
@@ -110,7 +110,7 @@ Exemplo de inscrição:
 {"type":"game.subscribe","requestId":"s1","gameId":"d7fc48b7-570a-4d8d-a7ae-1bc5d20a9c13"}
 ```
 
-Após autorizar `game.subscribe`, o servidor associa a conexão à partida e envia imediatamente:
+Após autorizar `game.subscribe`, o servidor associa a conexão à partida e responde com `game.state`.
 
 ```json
 {"type":"game.state","requestId":"s1","snapshot":{"gameId":"d7fc48b7-570a-4d8d-a7ae-1bc5d20a9c13","status":"WAITING"}}
@@ -120,7 +120,7 @@ O campo `snapshot` sempre usa integralmente o formato da seção "Snapshot de pa
 
 Após uma transição REST aceita, o servidor publica `game.state` sem `requestId` para as conexões inscritas na partida, somente depois do commit da transação persistente. Nesta versão, a transição publicada é a entrada do segundo jogador, de `WAITING` para `ACTIVE`.
 
-JSON inválido, campos obrigatórios ausentes ou `gameId` inválido retornam `VALIDATION_ERROR`. Tipo ainda não suportado retorna `UNSUPPORTED_MESSAGE`. Partida inexistente retorna `GAME_NOT_FOUND` e tentativa de observação sem permissão retorna `NOT_A_PARTICIPANT`. O erro correlato inclui o `requestId` recebido quando ele for uma string válida:
+Cada mensagem deve conter um único objeto JSON. JSON inválido, conteúdo excedente, campos obrigatórios ausentes ou `gameId` inválido retornam `VALIDATION_ERROR`. Tipo ainda não suportado retorna `UNSUPPORTED_MESSAGE`. Partida inexistente retorna `GAME_NOT_FOUND` e tentativa de observação sem permissão retorna `NOT_A_PARTICIPANT`. O erro correlato inclui o `requestId` recebido quando ele for uma string válida:
 
 ```json
 {"type":"game.error","requestId":"s1","code":"NOT_A_PARTICIPANT","message":"Not a game participant"}
@@ -130,20 +130,20 @@ Essas rejeições não alteram nem associam a partida.
 
 ### Ações da partida
 
-Novas ações só são aceitas de participantes humanos de partidas em `ACTIVE`. Observadores de `AI_VS_AI` recebem `NOT_A_PARTICIPANT`. Uma ação aceita responde com `game.state` correlacionado ao `requestId`. Após o commit de uma transição, as demais conexões inscritas recebem uma publicação de `game.state` sem `requestId`, inclusive outras conexões da sessão do emissor.
+Novas ações só são aceitas de participantes humanos de partidas em `ACTIVE`. Observadores de `AI_VS_AI` recebem `NOT_A_PARTICIPANT`. Uma ação aceita responde com `game.state` correlacionado ao `requestId`. Após o commit de uma transição, as demais conexões inscritas recebem uma publicação de `game.state` sem `requestId`, inclusive outras conexões da sessão do emissor. As transições de uma partida são publicadas em ordem crescente de revisão.
 
 ```json
 {"type":"game.move","requestId":"m1","gameId":"d7fc48b7-570a-4d8d-a7ae-1bc5d20a9c13","uci":"e2e4","revision":12}
-{"type":"game.abandon","requestId":"m2","gameId":"d7fc48b7-570a-4d8d-a7ae-1bc5d20a9c13"}
+{"type":"game.abandon","requestId":"m2","gameId":"d7fc48b7-570a-4d8d-a7ae-1bc5d20a9c13","revision":12}
 {"type":"draw.offer","requestId":"m3","gameId":"d7fc48b7-570a-4d8d-a7ae-1bc5d20a9c13","revision":13}
 {"type":"draw.respond","requestId":"m4","gameId":"d7fc48b7-570a-4d8d-a7ae-1bc5d20a9c13","accept":true,"revision":14}
 ```
 
 `uci` usa notação UCI de quatro caracteres, com um quinto caractere (`q`, `r`, `b` ou `n`) na promoção.
 
-`revision` é a revisão do snapshot usado pelo cliente. Quando enviado, o campo deve ser um inteiro JSON de 64 bits não negativo. Se o campo for omitido, para compatibilidade com o cliente Godot, o servidor usa a revisão do último snapshot enviado naquela inscrição. Sem revisão explícita ou snapshot da inscrição nessa conexão, uma nova ação retorna `VALIDATION_ERROR`. A revisão é capturada antes de esperar a trava e comparada com a revisão persistida sob a trava. Uma divergência retorna `STALE_REVISION` sem alterar a partida. Envie explicitamente a revisão quando a ação se basear em um snapshot que pode ter sido substituído.
+`revision` é obrigatório para novas ações e deve ser um inteiro JSON de 64 bits não negativo. Envie a revisão do snapshot que motivou a ação, inclusive ao responder a uma oferta de empate. O servidor compara a revisão recebida com a persistida sob a trava da partida. Uma divergência retorna `STALE_REVISION` sem alterar a partida.
 
-Para ações, use um `requestId` com até 128 caracteres Unicode válidos, sem NUL, e reserve cada ID para uma ação por sessão e partida. Um reenvio com o mesmo tipo, revisão explícita ou omitida e dados da ação responde ao participante com o snapshot persistido atual, mesmo após outra transição ou reinício, sem reaplicar a ação ou republicar o estado. Reutilizar um ID aceito em outro comando válido retorna `REQUEST_ID_CONFLICT`.
+Para ações, use um `requestId` com até 128 caracteres Unicode válidos, sem NUL, e reserve cada ID para uma ação por sessão e partida. Um reenvio com o mesmo tipo, revisão e dados da ação responde ao participante com o snapshot persistido atual, mesmo após outra transição ou reinício, sem reaplicar a ação ou republicar o estado. A omissão de `revision` só é aceita no reenvio de uma ação que já tenha um recibo com a revisão omitida. Reutilizar um ID aceito em outro comando válido retorna `REQUEST_ID_CONFLICT`.
 
 `game.abandon` encerra a partida com vitória do oponente por `RESIGNATION`. `draw.offer` registra a oferta; oferecer quando o oponente já ofereceu equivale a aceitar. `draw.respond` com `accept` verdadeiro encerra em `DRAW` por `DRAW_AGREED`, e com `accept` falso apenas retira a oferta. Uma oferta pendente é descartada no lance seguinte.
 

@@ -34,7 +34,8 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         this.queryService = queryService;
         this.actionService = actionService;
         this.subscriptions = subscriptions;
-        this.messageReader = objectMapper.reader().with(DeserializationFeature.FAIL_ON_READING_DUP_TREE_KEY);
+        this.messageReader = objectMapper.reader().with(
+                DeserializationFeature.FAIL_ON_READING_DUP_TREE_KEY, DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
     }
 
     @Override
@@ -131,15 +132,13 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                     || !StandardCharsets.UTF_8.newEncoder().canEncode(requestId)) {
                 throw new InvalidFieldException("requestId must be valid Unicode, at most 128 characters and without NUL");
             }
-            Long explicitRevision = revision(message);
-            Long observedRevision = explicitRevision == null ? subscriptions.observedRevision(session, gameId) : null;
             GameSnapshot snapshot = gameAction.execute(new GameActionService.Request(
-                    gameId, sessionId, requestId, session.getId(), explicitRevision, observedRevision));
+                    gameId, sessionId, requestId, session.getId(), revision(message)));
             subscriptions.sendState(session, requestId, snapshot);
         } catch (InvalidFieldException exception) {
             subscriptions.sendError(session, requestId, "VALIDATION_ERROR", exception.getMessage());
         } catch (GameActionService.MissingRevisionException exception) {
-            subscriptions.sendError(session, requestId, "VALIDATION_ERROR", "Provide revision or subscribe to the game");
+            subscriptions.sendError(session, requestId, "VALIDATION_ERROR", "revision is required for new actions");
         } catch (GameActionService.RequestIdConflictException exception) {
             subscriptions.sendError(session, requestId, "REQUEST_ID_CONFLICT", "requestId already used for another action");
         } catch (GameActionService.InvalidMoveFormatException exception) {

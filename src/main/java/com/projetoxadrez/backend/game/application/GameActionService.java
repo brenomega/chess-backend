@@ -90,7 +90,7 @@ public class GameActionService {
             return store.snapshot(gameId);
         }
 
-        Long expectedRevision = request.revision() != null ? request.revision() : request.observedRevision();
+        Long expectedRevision = request.revision();
         if (expectedRevision == null) {
             throw new MissingRevisionException();
         }
@@ -125,7 +125,7 @@ public class GameActionService {
     }
 
     public record Request(
-            UUID gameId, UUID sessionId, String requestId, String connectionId, Long revision, Long observedRevision) {
+            UUID gameId, UUID sessionId, String requestId, String connectionId, Long revision) {
     }
 
     public static final class MissingRevisionException extends RuntimeException {

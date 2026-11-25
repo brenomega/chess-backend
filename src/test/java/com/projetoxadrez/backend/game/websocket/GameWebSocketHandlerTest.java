@@ -129,6 +129,26 @@ class GameWebSocketHandlerTest {
         assertThat(store.snapshotQueries).isZero();
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {" {\"revision\":-1}", " garbage"})
+    void rejectsTrailingContentWithoutApplyingTheAction(String suffix) throws Exception {
+        actionStore.match = activeMatch();
+
+        handler.handleTextMessage(session, new TextMessage("""
+                {"type":"game.move","requestId":"move-1","gameId":"%s","revision":1,"uci":"e2e4"}
+                """.formatted(gameId) + suffix));
+
+        assertThat(session.messages).singleElement().satisfies(message -> {
+            JsonNode error = json(message);
+            assertThat(error.path("type").asText()).isEqualTo("game.error");
+            assertThat(error.path("code").asText()).isEqualTo("VALIDATION_ERROR");
+            assertThat(error.has("requestId")).isFalse();
+        });
+        assertThat(actionStore.match.revision()).isEqualTo(1);
+        assertThat(actionStore.saves).isZero();
+        assertThat(actionStore.identities).isEmpty();
+    }
+
     @Test
     void rejectsMissingRequestIdWithoutReturningAnInvalidCorrelation() throws Exception {
         handler.handleTextMessage(session, new TextMessage("""
@@ -236,6 +256,7 @@ class GameWebSocketHandlerTest {
         assertThat(session.messages).singleElement().satisfies(message ->
                 assertThat(json(message).path("code").asText()).isEqualTo("VALIDATION_ERROR"));
         assertThat(actionStore.saves).isZero();
+        assertThat(actionStore.identities).isEmpty();
     }
 
     @Test
@@ -243,7 +264,7 @@ class GameWebSocketHandlerTest {
         actionStore.match = activeMatch();
 
         handler.handleTextMessage(session, new TextMessage("""
-                {"type":"game.move","requestId":"move-4","gameId":"%s","uci":"torre pra frente"}
+                {"type":"game.move","requestId":"move-4","gameId":"%s","revision":1,"uci":"torre pra frente"}
                 """.formatted(gameId)));
 
         assertThat(session.messages).singleElement().satisfies(message -> {

@@ -10,6 +10,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.projetoxadrez.backend.ChessBackendApplication;
 import com.projetoxadrez.backend.game.application.GameActionService;
+import com.projetoxadrez.backend.game.application.GameQueryService;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.WebSocket;
@@ -25,11 +26,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.SpringApplication;
 import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.core.Ordered;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.ConfigurableTransactionManager;
 import org.springframework.transaction.TransactionExecution;
 import org.springframework.transaction.TransactionExecutionListener;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.client.RestClient;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -40,6 +44,7 @@ class ActionConsistencyIntegrationTest {
 
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final HttpClient HTTP = HttpClient.newHttpClient();
+    private static final String MOVE_TRANSACTION = GameActionService.class.getName() + ".move";
 
     @Container
     static final PostgreSQLContainer<?> postgresql = new PostgreSQLContainer<>("postgres:17-alpine");
@@ -60,7 +65,7 @@ class ActionConsistencyIntegrationTest {
                 var releaseCommit = new CompletableFuture<Void>();
                 backend.gateNextMoveCommit(reachedCommit, releaseCommit);
                 ObjectNode move = command("game.move", "mv-1", gameId).put("uci", "e2e4").put("revision", 1);
-                ObjectNode staleOffer = command("draw.offer", "do-1", gameId);
+                ObjectNode staleOffer = command("draw.offer", "do-1", gameId).put("revision", 1);
                 try {
                     sender.send(move);
                     reachedCommit.get(10, SECONDS);
@@ -96,6 +101,7 @@ class ActionConsistencyIntegrationTest {
                 sender.subscribe(gameId);
                 mirror.subscribe(gameId);
                 opponent.subscribe(gameId);
+                assertError(opponent.exchange(staleOffer), "STALE_REVISION");
                 assertThat(backend.game(gameId)).containsEntry("revision", 2L)
                         .containsEntry("move_history", "e2e4").containsEntry("draw_offer_side", null);
                 assertThat(backend.receipts(gameId)).isOne();
@@ -114,7 +120,57 @@ class ActionConsistencyIntegrationTest {
     }
 
     @Test
-    void replaysLegacyDrawAndAbandonActionsAcrossTransitionsAndBackendRestart() throws Exception {
+    void publishesBothTransitionsInOrderWhenTheFirstPostCommitCallbackIsDelayed() throws Exception {
+        try (Backend backend = startBackend()) {
+            String white = backend.createSession();
+            String black = backend.createSession();
+            UUID gameId = backend.startGame(white, black);
+            try (Socket sender = backend.connect(white); Socket opponent = backend.connect(black);
+                    Socket mirror = backend.connect(white)) {
+                sender.subscribe(gameId);
+                opponent.subscribe(gameId);
+                mirror.subscribe(gameId);
+                var firstCommitted = new CompletableFuture<Void>();
+                var releaseFirstPublication = new CompletableFuture<Void>();
+                var secondCallbacksCompleted = new CompletableFuture<Void>();
+                var resubscriptionRead = new CompletableFuture<Void>();
+                backend.gateFirstMovePublication(
+                        firstCommitted, releaseFirstPublication, secondCallbacksCompleted, resubscriptionRead);
+                try {
+                    sender.send(command("game.move", "first", gameId).put("uci", "e2e4").put("revision", 1));
+                    firstCommitted.get(10, SECONDS);
+                    long revision = backend.rest.get().uri("/v1/games/{gameId}", gameId)
+                            .header("X-Session-Token", black).retrieve().body(JsonNode.class).path("revision").asLong();
+                    assertThat(revision).isEqualTo(2);
+                    opponent.send(command("game.move", "second", gameId).put("uci", "e7e5").put("revision", revision));
+                    secondCallbacksCompleted.get(10, SECONDS);
+                    assertThat(backend.game(gameId)).containsEntry("revision", 3L)
+                            .containsEntry("move_history", "e2e4 e7e5");
+                    assertThat(backend.receipts(gameId)).isEqualTo(2);
+                    mirror.send(command("game.subscribe", "resubscribe", gameId));
+                    resubscriptionRead.get(10, SECONDS);
+                    mirror.assertNoMessage();
+                } finally {
+                    releaseFirstPublication.complete(null);
+                }
+
+                JsonNode first = assertPublication(mirror.receive(), 2, "e2e4");
+                JsonNode second = assertPublication(mirror.receive(), 3, "e7e5");
+                JsonNode resubscribed = mirror.receive();
+                assertThat(resubscribed.path("requestId").asText()).isEqualTo("resubscribe");
+                assertThat(resubscribed.path("snapshot")).isEqualTo(second.path("snapshot"));
+                assertThat(opponent.receive()).isEqualTo(first);
+                JsonNode reply = opponent.receive();
+                assertThat(reply.path("requestId").asText()).isEqualTo("second");
+                assertThat(reply.path("snapshot")).isEqualTo(second.path("snapshot"));
+                mirror.subscribe(gameId);
+                opponent.subscribe(gameId);
+            }
+        }
+    }
+
+    @Test
+    void bindsDrawActionsToTheirOfferAndPreservesReceiptsAcrossBackendRestart() throws Exception {
         String white;
         String black;
         UUID gameId;
@@ -125,7 +181,7 @@ class ActionConsistencyIntegrationTest {
             gameId = backend.startGame(white, black);
             try (Socket proposer = backend.connect(white); Socket responder = backend.connect(black)) {
                 proposer.subscribe(gameId);
-                ObjectNode firstOffer = command("draw.offer", "do-2", gameId);
+                ObjectNode firstOffer = command("draw.offer", "do-2", gameId).put("revision", 1);
                 assertThat(proposer.exchange(firstOffer).at("/snapshot/drawOffer/offeredBy").asText())
                         .isEqualTo("WHITE");
                 decline = command("draw.respond", "dr-3", gameId).put("accept", false);
@@ -133,21 +189,34 @@ class ActionConsistencyIntegrationTest {
 
                 responder.subscribe(gameId);
                 Map<String, Object> offered = backend.game(gameId);
-                assertThat(proposer.exchange(command("draw.offer", "do-repeat", gameId))
+                assertThat(proposer.exchange(command("draw.offer", "do-repeat", gameId).put("revision", 2))
                         .at("/snapshot/revision").asLong()).isEqualTo(2);
                 assertThat(backend.game(gameId)).isEqualTo(offered);
                 responder.subscribe(gameId);
 
-                assertThat(responder.exchange(decline).at("/snapshot/drawOffer").isNull()).isTrue();
+                assertError(responder.exchange(decline), "VALIDATION_ERROR");
+                assertThat(responder.exchange(decline.deepCopy().put("revision", 2))
+                        .at("/snapshot/drawOffer").isNull()).isTrue();
                 assertThat(proposer.receive().at("/snapshot/revision").asLong()).isEqualTo(3);
                 assertThat(proposer.exchange(firstOffer).at("/snapshot/drawOffer").isNull()).isTrue();
                 responder.subscribe(gameId);
 
-                assertThat(proposer.exchange(command("draw.offer", "do-4", gameId))
+                ObjectNode delayedAccept = command("draw.respond", "late-accept", gameId).put("accept", true);
+                assertError(responder.exchange(delayedAccept), "VALIDATION_ERROR");
+                assertThat(proposer.exchange(command("draw.offer", "do-4", gameId).put("revision", 3))
                         .at("/snapshot/revision").asLong()).isEqualTo(4);
-                assertError(proposer.exchange(command("game.abandon", "do-4", gameId)), "REQUEST_ID_CONFLICT");
-                assertThat(backend.game(gameId)).containsEntry("revision", 4L).containsEntry("draw_offer_side", "WHITE");
+                assertPublication(responder.receive(), 4, null);
+                assertError(responder.exchange(delayedAccept), "VALIDATION_ERROR");
+                assertError(responder.exchange(delayedAccept.deepCopy().put("revision", 2)), "STALE_REVISION");
+                assertError(proposer.exchange(command("game.abandon", "do-4", gameId).put("revision", 4)),
+                        "REQUEST_ID_CONFLICT");
+                assertThat(backend.game(gameId)).containsEntry("status", "ACTIVE")
+                        .containsEntry("revision", 4L).containsEntry("draw_offer_side", "WHITE");
                 assertThat(backend.receipts(gameId)).isEqualTo(4);
+                assertThat(backend.jdbc().update("""
+                        UPDATE chess.game_action_receipt SET action_identity = 'draw.respond::false'
+                        WHERE game_id = ? AND request_id = ?
+                        """, gameId, decline.path("requestId").asText())).isOne();
             }
         }
 
@@ -164,7 +233,7 @@ class ActionConsistencyIntegrationTest {
                     .containsEntry("revision", 4L).containsEntry("draw_offer_side", "WHITE");
 
             responder.subscribe(gameId);
-            ObjectNode abandon = command("game.abandon", "rs-6", gameId);
+            ObjectNode abandon = command("game.abandon", "rs-6", gameId).put("revision", 4);
             JsonNode finished = responder.exchange(abandon);
             assertThat(finished.at("/snapshot/result/reason").asText()).isEqualTo("RESIGNATION");
             assertThat(responder.exchange(abandon)).isEqualTo(finished);
@@ -174,11 +243,19 @@ class ActionConsistencyIntegrationTest {
 
             UUID anotherGame = restarted.startGame(black, white);
             responder.subscribe(anotherGame);
-            responder.exchange(command("game.abandon", "rs-6", anotherGame));
+            responder.exchange(command("game.abandon", "rs-6", anotherGame).put("revision", 1));
             assertThat(restarted.game(anotherGame)).containsEntry("revision", 2L)
                     .containsEntry("result_outcome", "BLACK_WIN").containsEntry("result_reason", "RESIGNATION");
             assertThat(restarted.receipts(anotherGame)).isOne();
         }
+    }
+
+    private static JsonNode assertPublication(JsonNode response, long revision, String lastMove) {
+        assertThat(response.path("type").asText()).isEqualTo("game.state");
+        assertThat(response.has("requestId")).isFalse();
+        assertThat(response.at("/snapshot/revision").asLong()).isEqualTo(revision);
+        assertThat(response.at("/snapshot/position/lastMoveUci").asText(null)).isEqualTo(lastMove);
+        return response;
     }
 
     private static void assertError(JsonNode response, String code) {
@@ -242,10 +319,48 @@ class ActionConsistencyIntegrationTest {
             context.getBean(ConfigurableTransactionManager.class).addListener(new TransactionExecutionListener() {
                 @Override
                 public void beforeCommit(TransactionExecution transaction) {
-                    if ((GameActionService.class.getName() + ".move").equals(transaction.getTransactionName())
+                    if (MOVE_TRANSACTION.equals(transaction.getTransactionName())
                             && armed.compareAndSet(true, false)) {
                         reached.complete(null);
                         release.orTimeout(15, SECONDS).join();
+                    }
+                }
+            });
+        }
+
+        void gateFirstMovePublication(CompletableFuture<Void> firstCommitted, CompletableFuture<Void> release,
+                CompletableFuture<Void> secondCallbacksCompleted, CompletableFuture<Void> resubscriptionRead) {
+            AtomicBoolean armed = new AtomicBoolean(true);
+            context.getBean(ConfigurableTransactionManager.class).addListener(new TransactionExecutionListener() {
+                @Override
+                public void beforeCommit(TransactionExecution transaction) {
+                    if (MOVE_TRANSACTION.equals(transaction.getTransactionName()) && armed.compareAndSet(true, false)) {
+                        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                            @Override
+                            public int getOrder() {
+                                return Ordered.HIGHEST_PRECEDENCE;
+                            }
+
+                            @Override
+                            public void afterCommit() {
+                                firstCommitted.complete(null);
+                                release.orTimeout(30, SECONDS).join();
+                            }
+                        });
+                    }
+                }
+
+                @Override
+                public void afterCommit(TransactionExecution transaction, Throwable failure) {
+                    if (failure != null) {
+                        return;
+                    }
+                    String transactionName = transaction.getTransactionName();
+                    if (MOVE_TRANSACTION.equals(transactionName)) {
+                        secondCallbacksCompleted.complete(null);
+                    } else if (secondCallbacksCompleted.isDone()
+                            && (GameQueryService.class.getName() + ".game").equals(transactionName)) {
+                        resubscriptionRead.complete(null);
                     }
                 }
             });
@@ -291,7 +406,7 @@ class ActionConsistencyIntegrationTest {
         }
 
         void assertNoMessage() throws InterruptedException {
-            assertThat(inbox.poll(150, MILLISECONDS)).as("WebSocket message before commit").isNull();
+            assertThat(inbox.poll(150, MILLISECONDS)).as("Unexpected WebSocket message").isNull();
         }
 
         JsonNode exchange(JsonNode request) throws Exception {
