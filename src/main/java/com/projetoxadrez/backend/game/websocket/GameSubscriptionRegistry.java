@@ -22,7 +22,10 @@ public class GameSubscriptionRegistry {
     }
 
     void subscribe(WebSocketSession session, UUID gameId) {
-        subscriptions.put(session.getId(), new Subscription(session, gameId));
+        synchronized (session) {
+            subscriptions.compute(session.getId(), (id, current) ->
+                    current != null && current.gameId.equals(gameId) ? current : new Subscription(session, gameId));
+        }
     }
 
     void remove(WebSocketSession session) {
@@ -30,6 +33,25 @@ public class GameSubscriptionRegistry {
     }
 
     void sendState(WebSocketSession session, String requestId, GameSnapshot snapshot) throws IOException {
+        synchronized (session) {
+            Subscription subscription = subscriptions.get(session.getId());
+            if (subscription != null && subscription.gameId.equals(snapshot.gameId())) {
+                GameSnapshot lastSent = subscription.lastSent;
+                if (lastSent != null && snapshot.revision() < lastSent.revision()) {
+                    if (requestId == null) {
+                        return;
+                    }
+                    snapshot = lastSent;
+                }
+                sendStateMessage(session, requestId, snapshot);
+                subscription.lastSent = snapshot;
+            } else if (requestId != null) {
+                sendStateMessage(session, requestId, snapshot);
+            }
+        }
+    }
+
+    private void sendStateMessage(WebSocketSession session, String requestId, GameSnapshot snapshot) throws IOException {
         ObjectNode message = objectMapper.createObjectNode();
         message.put("type", "game.state");
         if (requestId != null) {
@@ -52,15 +74,15 @@ public class GameSubscriptionRegistry {
 
     public void publish(GameSnapshot snapshot) {
         subscriptions.values().stream()
-                .filter(subscription -> subscription.gameId().equals(snapshot.gameId()))
+                .filter(subscription -> subscription.gameId.equals(snapshot.gameId()))
                 .forEach(subscription -> publish(subscription, snapshot));
     }
 
     private void publish(Subscription subscription, GameSnapshot snapshot) {
         try {
-            sendState(subscription.session(), null, snapshot);
+            sendState(subscription.session, null, snapshot);
         } catch (IOException | RuntimeException exception) {
-            subscriptions.remove(subscription.session().getId(), subscription);
+            subscriptions.remove(subscription.session.getId(), subscription);
         }
     }
 
@@ -73,6 +95,14 @@ public class GameSubscriptionRegistry {
         }
     }
 
-    private record Subscription(WebSocketSession session, UUID gameId) {
+    private static final class Subscription {
+        private final WebSocketSession session;
+        private final UUID gameId;
+        private GameSnapshot lastSent;
+
+        private Subscription(WebSocketSession session, UUID gameId) {
+            this.session = session;
+            this.gameId = gameId;
+        }
     }
 }
