@@ -37,7 +37,7 @@ public class JpaGameActionStore implements GameActionStore {
                 .orElseThrow(() -> new IllegalStateException("Game disappeared while acting"));
         entity.applyMatchState(match);
         repository.flush();
-        return snapshotFactory.snapshot(entity);
+        return snapshotFactory.persistedSnapshot(entity);
     }
 
     private static Match toDomain(GameEntity entity) {

@@ -75,6 +75,49 @@ public final class Game {
                 null);
     }
 
+    /**
+     * Partida do criador contra a IA (EAP 2.14.1).
+     *
+     * <p>Não há segundo jogador para esperar, então a partida já nasce ativa, com o relógio
+     * ancorado e a vez das brancas. É sempre pública e sem código: ninguém entra nela.
+     */
+    public static Game createAgainstAi(
+            TimeControl timeControl, UUID creatorSessionId, Side humanSide, Instant now) {
+        Objects.requireNonNull(timeControl, "timeControl must not be null");
+        Objects.requireNonNull(creatorSessionId, "creatorSessionId must not be null");
+        Objects.requireNonNull(humanSide, "humanSide must not be null");
+        Objects.requireNonNull(now, "now must not be null");
+        return startedGame(
+                timeControl,
+                List.of(
+                        new Participant(humanSide, creatorSessionId, "HUMAN"),
+                        new Participant(humanSide.opposite(), null, "AI")),
+                now);
+    }
+
+    /** Partida entre duas IAs, para assistir (EAP 2.14.1). */
+    public static Game createAiVersusAi(TimeControl timeControl, Instant now) {
+        Objects.requireNonNull(timeControl, "timeControl must not be null");
+        Objects.requireNonNull(now, "now must not be null");
+        return startedGame(
+                timeControl,
+                List.of(new Participant(Side.WHITE, null, "AI"), new Participant(Side.BLACK, null, "AI")),
+                now);
+    }
+
+    private static Game startedGame(TimeControl timeControl, List<Participant> participants, Instant now) {
+        return new Game(
+                GameId.newId(),
+                GameStatus.ACTIVE,
+                GameVisibility.PUBLIC,
+                null,
+                timeControl,
+                0,
+                participants,
+                Side.WHITE,
+                now);
+    }
+
     public static Game rehydrate(
             GameId id,
             GameStatus status,

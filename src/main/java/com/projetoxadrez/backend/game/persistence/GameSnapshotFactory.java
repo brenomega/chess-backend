@@ -26,6 +26,19 @@ class GameSnapshotFactory {
                         game.getActiveSide(),
                         game.getClockUpdatedAt())
                 .applyElapsed(clock.instant());
+        return snapshot(game, clockReading);
+    }
+
+    GameSnapshot persistedSnapshot(GameEntity game) {
+        return snapshot(game, new GameClock.Reading(
+                game.getStatus(),
+                game.getWhiteRemainingMs(),
+                game.getBlackRemainingMs(),
+                game.getActiveSide(),
+                null));
+    }
+
+    private static GameSnapshot snapshot(GameEntity game, GameClock.Reading clockReading) {
         return new GameSnapshot(
                 game.getId(),
                 clockReading.gameStatus(),

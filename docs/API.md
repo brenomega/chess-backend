@@ -9,12 +9,12 @@ O cliente envia JSON em UTF-8. Identificadores são UUIDs, instantes usam ISO-86
 | `POST /v1/sessions` | corpo vazio | `201` com `sessionId`, `recoveryToken` e `expiresAt` |
 | `POST /v1/sessions/recover` | `{"recoveryToken":"..."}` | `200` com `sessionId`, `recoveryToken` e `expiresAt` |
 | `GET /v1/games?page=0&size=20` | token de sessão | `200` com página de `games`, contendo `gameId`, `status`, `visibility`, `timeControl` e `createdAt` |
-| `POST /v1/games` | token de sessão; `{"visibility":"PUBLIC|PRIVATE","timeControl":{"initialTimeMs":600000,"incrementMs":0}}` | `201` com o snapshot da partida em espera |
+| `POST /v1/games` | token de sessão; `{"visibility":"PUBLIC|PRIVATE","timeControl":{"initialTimeMs":600000,"incrementMs":0},"mode":"HUMAN_VS_HUMAN|HUMAN_VS_AI|AI_VS_AI","side":"WHITE|BLACK"}` | `201` com o snapshot da partida |
 | `POST /v1/games/join` | token de sessão; `{"entryCode":"G7K2XP"}` | `200` com o snapshot da partida `PRIVATE` ativa, incluindo `gameId` |
 | `POST /v1/games/{gameId}/join` | token de sessão; corpo vazio para `PUBLIC` ou `{"entryCode":"G7K2XP"}` para `PRIVATE` | `200` com o snapshot da partida ativa |
-| `GET /v1/games/{gameId}` | token de sessão de participante | `200` com o snapshot da partida |
+| `GET /v1/games/{gameId}` | token de participante ou de observador de `AI_VS_AI` | `200` com o snapshot da partida |
 
-`POST /v1/games` cria uma partida humano contra humano em `WAITING` e associa a sessão criadora como `WHITE` e `HUMAN`. Partidas `PUBLIC` não têm `entryCode` e são listadas no lobby enquanto aguardam o segundo jogador. Partidas `PRIVATE` não aparecem no lobby e recebem um `entryCode` opaco de seis caracteres para compartilhamento externo. `POST /v1/games/join` localiza somente uma partida `PRIVATE` em `WAITING` pelo código, atribui `BLACK` ao segundo guest e devolve o snapshot com `gameId`. Código ausente retorna `ENTRY_CODE_REQUIRED`; código malformado, inexistente ou que não identifica mais uma partida privada em espera retorna `INVALID_ENTRY_CODE`, sem revelar outra partida. O fluxo público permanece em `POST /v1/games/{gameId}/join`, com corpo vazio. Essa rota por `gameId` também preserva o contrato anterior para partidas `PRIVATE`, exigindo o código correspondente. A recuperação de sessão preserva a identidade necessária para consultar e retomar as partidas das quais ela participa.
+Em `HUMAN_VS_HUMAN`, partidas `PUBLIC` não têm `entryCode` e são listadas no lobby enquanto aguardam o segundo jogador. Partidas `PRIVATE` não aparecem no lobby e recebem um `entryCode` opaco de seis caracteres para compartilhamento externo. `POST /v1/games/join` localiza somente uma partida `PRIVATE` em `WAITING` pelo código e devolve o snapshot com `gameId`. Código ausente retorna `ENTRY_CODE_REQUIRED`; código malformado, inexistente ou que não identifica mais uma partida privada em espera retorna `INVALID_ENTRY_CODE`, sem revelar outra partida. O fluxo público permanece em `POST /v1/games/{gameId}/join`, com corpo vazio. Essa rota por `gameId` também preserva o contrato anterior para partidas `PRIVATE`, exigindo o código correspondente. A recuperação de sessão preserva a identidade necessária para consultar e retomar as partidas das quais ela participa.
 
 `timeControl.initialTimeMs` aceita `180000`, `600000`, `3600000` ou `0`; `0` representa uma partida sem limite de tempo. `timeControl.incrementMs` deve ser `0`.
 
@@ -29,6 +29,24 @@ O cliente envia JSON em UTF-8. Identificadores são UUIDs, instantes usam ISO-86
   "createdAt": "2026-10-02T15:00:00Z"
 }
 ```
+
+### Modos de partida
+
+`mode` escolhe a composição da partida e é opcional: ausente, vale `HUMAN_VS_HUMAN`, que era o único modo antes, então clientes que não conhecem o campo continuam funcionando.
+
+| Modo | Participantes | Estado inicial |
+| --- | --- | --- |
+| `HUMAN_VS_HUMAN` | criador como `WHITE`, segundo guest como `BLACK` | `WAITING` até alguém entrar |
+| `HUMAN_VS_AI` | criador no lado de `side`, IA no lado oposto | `ACTIVE`, relógio correndo |
+| `AI_VS_AI` | duas IAs | `ACTIVE`, relógio correndo |
+
+Partidas com IA são sempre `PUBLIC` e sem `entryCode`. O campo `visibility` enviado é ignorado. Essas partidas não aceitam entrada de jogadores e ficam fora do lobby.
+
+`side` escolhe o lado do humano em `HUMAN_VS_AI` e vale `WHITE` quando ausente; nos outros modos é ignorado. As brancas sempre começam, então criar uma partida com `side` igual a `BLACK` faz a IA jogar primeiro.
+
+Qualquer sessão válida pode consultar ou assinar uma partida `AI_VS_AI`. Nos demais modos, a consulta e a inscrição são restritas aos participantes.
+
+Quando a vez é de um participante `AI`, o Backend enfileira o trabalho para o worker e aplica o lance que ele devolver, pelas mesmas regras de um lance humano. O cliente não faz nada de diferente: recebe um `game.state` novo quando a IA joga. O contrato entre Backend e worker está em `docs/contracts/backend-ai.md` e não faz parte da API do cliente.
 
 ### Snapshot de partida
 
@@ -96,11 +114,11 @@ Após autorizar `game.subscribe`, o servidor associa a conexão à partida e env
 {"type":"game.state","requestId":"s1","snapshot":{"gameId":"d7fc48b7-570a-4d8d-a7ae-1bc5d20a9c13","status":"WAITING"}}
 ```
 
-O campo `snapshot` sempre usa integralmente o formato da seção "Snapshot de partida"; o exemplo está abreviado apenas para destacar o envelope. Uma nova inscrição válida na mesma conexão substitui a associação anterior. Somente participantes podem se inscrever.
+O campo `snapshot` sempre usa integralmente o formato da seção "Snapshot de partida"; o exemplo está abreviado apenas para destacar o envelope. Uma nova inscrição válida na mesma conexão substitui a associação anterior. A inscrição segue as permissões de observação dos modos de partida.
 
 Após uma transição REST aceita, o servidor publica `game.state` sem `requestId` para as conexões inscritas na partida, somente depois do commit da transação persistente. Nesta versão, a transição publicada é a entrada do segundo jogador, de `WAITING` para `ACTIVE`.
 
-JSON inválido, campos obrigatórios ausentes ou `gameId` inválido retornam `VALIDATION_ERROR`. Tipo ainda não suportado retorna `UNSUPPORTED_MESSAGE`. Partida inexistente retorna `GAME_NOT_FOUND` e tentativa de observação por não participante retorna `NOT_A_PARTICIPANT`. O erro correlato inclui o `requestId` recebido quando ele for uma string válida:
+JSON inválido, campos obrigatórios ausentes ou `gameId` inválido retornam `VALIDATION_ERROR`. Tipo ainda não suportado retorna `UNSUPPORTED_MESSAGE`. Partida inexistente retorna `GAME_NOT_FOUND` e tentativa de observação sem permissão retorna `NOT_A_PARTICIPANT`. O erro correlato inclui o `requestId` recebido quando ele for uma string válida:
 
 ```json
 {"type":"game.error","requestId":"s1","code":"NOT_A_PARTICIPANT","message":"Not a game participant"}
@@ -110,7 +128,7 @@ Essas rejeições não alteram nem associam a partida.
 
 ### Ações da partida
 
-As quatro ações abaixo só valem com `status` igual a `ACTIVE` e só são aceitas dos participantes da partida. Cada ação aceita responde com `game.state` correlacionado ao `requestId` e publica o mesmo `game.state`, sem `requestId`, para as outras conexões inscritas, sempre depois do commit da transação.
+As quatro ações abaixo só valem com `status` igual a `ACTIVE` e só são aceitas dos participantes humanos da partida. Observadores de `AI_VS_AI` recebem `NOT_A_PARTICIPANT` para essas ações. Cada ação aceita responde com `game.state` correlacionado ao `requestId` e publica o mesmo `game.state`, sem `requestId`, para as outras conexões inscritas, sempre depois do commit da transação.
 
 ```json
 {"type":"game.move","requestId":"m1","gameId":"d7fc48b7-570a-4d8d-a7ae-1bc5d20a9c13","uci":"e2e4","revision":12}
@@ -121,7 +139,7 @@ As quatro ações abaixo só valem com `status` igual a `ACTIVE` e só são acei
 
 `uci` usa notação UCI de quatro caracteres, com um quinto caractere (`q`, `r`, `b` ou `n`) na promoção.
 
-`revision` é a revisão que o cliente acredita ser a atual, lida do último `snapshot` recebido. Quando presente e diferente da revisão da partida, a ação é recusada com `STALE_REVISION` e nada muda — é assim que um reenvio atrasado deixa de ser aplicado duas vezes. Quando ausente, o servidor não confere a revisão.
+`revision` é a revisão que o cliente acredita ser a atual, lida do último `snapshot` recebido. Quando presente e diferente da revisão da partida, a ação é recusada com `STALE_REVISION` sem alterar a partida, o que impede a aplicação duplicada de um reenvio atrasado. Quando ausente, o servidor não confere a revisão.
 
 `game.abandon` encerra a partida com vitória do oponente por `RESIGNATION`. `draw.offer` registra a oferta; oferecer quando o oponente já ofereceu equivale a aceitar. `draw.respond` com `accept` verdadeiro encerra em `DRAW` por `DRAW_AGREED`, e com `accept` falso apenas retira a oferta. Uma oferta pendente é descartada no lance seguinte.
 

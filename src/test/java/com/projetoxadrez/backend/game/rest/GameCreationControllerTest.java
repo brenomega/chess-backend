@@ -53,6 +53,7 @@ class GameCreationControllerTest {
                         new GameCreationService(
                                 store,
                                 generatedCodes::removeFirst,
+                                snapshot -> {},
                                 Clock.fixed(NOW, ZoneOffset.UTC)),
                         sessionService))
                 .setControllerAdvice(
