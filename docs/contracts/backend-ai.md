@@ -27,7 +27,7 @@ Quando houver trabalho disponível, responde `200`:
 }
 ```
 
-Quando não houver trabalho, responde `204` sem corpo. Um mesmo `jobId` pode ser reapresentado ao mesmo worker até receber resultado ou expirar.
+Quando não houver trabalho disponível, responde `204` sem corpo. Uma atribuição fica reservada ao worker até `expiresAt`. Se expirar sem resultado válido e ainda corresponder ao turno, o mesmo `jobId` pode ser atribuído novamente, inclusive a outro worker.
 
 ## Entregar candidato
 
@@ -43,11 +43,11 @@ Quando não houver trabalho, responde `204` sem corpo. Um mesmo `jobId` pode ser
 }
 ```
 
-O Backend valida que o trabalho pertence ao worker, não expirou e ainda corresponde à revisão em jogo. Também valida o UCI pelas regras autoritativas antes de aplicar o movimento. A resposta `200` contém `{"status":"APPLIED","gameId":"...","revision":13}`. Uma repetição idêntica de resultado já aplicado retorna o mesmo resultado, sem executar uma segunda transição; um resultado diferente para trabalho concluído retorna `JOB_ALREADY_COMPLETED`.
+O Backend verifica a titularidade do trabalho antes de tratar reenvios. Para um trabalho em aberto, confere `gameId`, prazo, revisão e estado da partida, e valida o UCI pelas regras autoritativas. A resposta `200` contém `{"status":"APPLIED","gameId":"...","revision":13}`. Um reenvio idêntico pelo proprietário retorna a mesma resposta sem executar outra transição. Alterar a revisão ou o UCI de um trabalho concluído retorna `JOB_ALREADY_COMPLETED`. Um `gameId` divergente retorna `VALIDATION_ERROR` ao proprietário.
 
 ## Erros
 
-O corpo é `{"code":"...","message":"..."}`.
+O corpo é `{"code":"...","message":"...","details":{}}`.
 
 | Status | Códigos essenciais |
 | --- | --- |
@@ -57,5 +57,11 @@ O corpo é `{"code":"...","message":"..."}`.
 | `422` | `ILLEGAL_MOVE`, `INVALID_GAME_STATE` |
 
 `WORKER_OWNERSHIP_CONFLICT` indica que o `jobId` está atribuído a outro `workerId`. A entrega é rejeitada sem alterar o trabalho ou a partida. O worker rejeitado não repete essa entrega: descarta o trabalho local e volta a solicitar trabalho em `/v1/ai/jobs/next`. O worker proprietário ainda pode entregar o resultado enquanto o trabalho estiver válido.
+
+Trabalhos cancelados retornam `JOB_EXPIRED` ao proprietário. Se o candidato chega com a atribuição válida e o relógio da partida já se esgotou, o Backend persiste o fim por `TIMEOUT`, cancela o trabalho e responde `INVALID_GAME_STATE`.
+
+## Consistência da fila
+
+Para uma partida existente, a transação trava uma única linha de `game` antes de alterar `ai_job`. A consulta inicial de resultado lê somente o ID da partida. O polling seleciona a partida com `FOR UPDATE OF g SKIP LOCKED` e relê o trabalho após obter a trava. Criação e ações gravam a partida antes de reconciliar a fila na mesma transação. Conclusão ou cancelamento é enviado ao banco antes de inserir um substituto, respeitando o índice de trabalho aberto por partida. Após o commit, o callback apenas publica o snapshot.
 
 O contrato não especifica algoritmo, profundidade de busca, avaliação, livro de aberturas ou motor utilizado pelo worker.

@@ -5,20 +5,25 @@ import com.projetoxadrez.backend.game.application.AiJobState;
 import com.projetoxadrez.backend.game.application.AiJobStatus;
 import com.projetoxadrez.backend.game.application.AiJobStore;
 import com.projetoxadrez.backend.game.chess.Side;
+import com.projetoxadrez.backend.game.domain.GameStatus;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
-import org.springframework.data.domain.Limit;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 @Component
+@Transactional(propagation = Propagation.MANDATORY)
 public class JpaAiJobStore implements AiJobStore {
 
     private final AiJobRepository repository;
+    private final GameRepository gameRepository;
 
-    public JpaAiJobStore(AiJobRepository repository) {
+    public JpaAiJobStore(AiJobRepository repository, GameRepository gameRepository) {
         this.repository = repository;
+        this.gameRepository = gameRepository;
     }
 
     @Override
@@ -33,26 +38,36 @@ public class JpaAiJobStore implements AiJobStore {
 
     @Override
     public Optional<AiJob> assignNext(String workerId, Instant now, Instant expiresAt) {
-        List<AiJobEntity> assignable = repository.findAssignable(now, Limit.of(1));
+        Optional<UUID> lockedGameId = repository.lockNextGame(now);
+        if (lockedGameId.isEmpty()) {
+            return Optional.empty();
+        }
+
+        UUID gameId = lockedGameId.orElseThrow();
+        Optional<AiJobEntity> assignable = repository.findOpenByGameId(gameId).stream()
+                .filter(job -> isAssignable(job, now))
+                .findFirst();
         if (assignable.isEmpty()) {
             return Optional.empty();
         }
-        AiJobEntity job = assignable.getFirst();
+
+        AiJobEntity job = assignable.orElseThrow();
+        GameEntity game = gameRepository.findById(gameId).orElseThrow();
+        if (!matchesCurrentTurn(job, game)) {
+            job.cancel(now);
+            return Optional.empty();
+        }
+
         job.assignTo(workerId, now, expiresAt);
-        repository.saveAndFlush(job);
-        return Optional.of(new AiJob(
-                job.getId(),
-                job.getGameId(),
-                job.getRevision(),
-                job.getPositionFen(),
-                job.getSideToMove(),
-                job.getTimeBudgetMs(),
-                job.getExpiresAt()));
+        return Optional.of(toJob(job));
     }
 
     @Override
-    public Optional<AiJobState> find(UUID jobId) {
-        return repository.findByIdForUpdate(jobId).map(JpaAiJobStore::state);
+    public Optional<AiJobState> findForResult(UUID jobId) {
+        return repository.findGameId(jobId)
+                .flatMap(gameRepository::findByIdForUpdate)
+                .flatMap(game -> repository.findById(jobId))
+                .map(JpaAiJobStore::state);
     }
 
     @Override
@@ -92,5 +107,33 @@ public class JpaAiJobStore implements AiJobStore {
                 job.getExpiresAt(),
                 job.getAppliedUci(),
                 job.getAppliedRevision());
+    }
+
+    private static boolean isAssignable(AiJobEntity job, Instant now) {
+        return job.getStatus() == AiJobStatus.PENDING
+                || job.getStatus() == AiJobStatus.ASSIGNED
+                        && job.getExpiresAt() != null
+                        && !now.isBefore(job.getExpiresAt());
+    }
+
+    private static boolean matchesCurrentTurn(AiJobEntity job, GameEntity game) {
+        return game.getStatus() == GameStatus.ACTIVE
+                && game.getRevision() == job.getRevision()
+                && game.getPositionFen().equals(job.getPositionFen())
+                && game.getActiveSide() == job.getSideToMove()
+                && game.getParticipants().stream()
+                        .anyMatch(participant -> participant.getSide() == job.getSideToMove()
+                                && "AI".equals(participant.getKind()));
+    }
+
+    private static AiJob toJob(AiJobEntity job) {
+        return new AiJob(
+                job.getId(),
+                job.getGameId(),
+                job.getRevision(),
+                job.getPositionFen(),
+                job.getSideToMove(),
+                job.getTimeBudgetMs(),
+                job.getExpiresAt());
     }
 }

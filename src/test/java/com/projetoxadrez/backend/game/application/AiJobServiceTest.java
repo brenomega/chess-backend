@@ -24,10 +24,6 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-/**
- * EAP 2.14.2 e 2.14.4: entrega de trabalho ao worker e recusa de candidato inválido, atrasado ou
- * de outro worker — sempre sem corromper a partida.
- */
 class AiJobServiceTest {
 
     private static final Instant NOW = Instant.parse("2026-11-24T15:00:00Z");
@@ -52,7 +48,6 @@ class AiJobServiceTest {
         service = new AiJobService(jobs, actions, scheduler, clock, LEASE_MS);
     }
 
-    /** Partida humano (brancas) contra IA (pretas), com as brancas já tendo jogado 1.e4. */
     private Match afterWhiteOpening() {
         ChessPosition position = ChessPosition.fromFen(
                 "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1");
@@ -80,8 +75,6 @@ class AiJobServiceTest {
         scheduler.syncAiTurn(games.snapshotOf(games.match));
         return service.next(workerId).orElseThrow();
     }
-
-    // ---------- 2.14.2 entrega de trabalho ----------
 
     @Test
     void handsOutNothingWhenThereIsNoJob() {
@@ -116,10 +109,8 @@ class AiJobServiceTest {
         assertThat(outcome.revision()).isEqualTo(5);
         assertThat(games.match.lastMoveUci()).isEqualTo("e7e5");
         assertThat(games.match.activeSide()).isEqualTo(Side.WHITE);
-        assertThat(jobs.find(job.jobId()).orElseThrow().status()).isEqualTo(AiJobStatus.COMPLETED);
+        assertThat(jobs.findForResult(job.jobId()).orElseThrow().status()).isEqualTo(AiJobStatus.COMPLETED);
     }
-
-    // ---------- 2.14.4 falha, atraso e candidato inválido ----------
 
     @Test
     void rejectsCandidateFromAnotherWorkerWithoutTouchingTheGame() {
@@ -128,7 +119,7 @@ class AiJobServiceTest {
         assertThatThrownBy(() -> service.result("worker-2", job.jobId(), gameId, 4, "e7e5"))
                 .isInstanceOf(AiJobService.WorkerOwnershipConflictException.class);
         assertThat(games.match.lastMoveUci()).isEqualTo("e2e4");
-        assertThat(jobs.find(job.jobId()).orElseThrow().status()).isEqualTo(AiJobStatus.ASSIGNED);
+        assertThat(jobs.findForResult(job.jobId()).orElseThrow().status()).isEqualTo(AiJobStatus.ASSIGNED);
     }
 
     @Test
@@ -197,6 +188,27 @@ class AiJobServiceTest {
     }
 
     @Test
+    void refusesAnIdenticalReplayFromAnotherWorker() {
+        AiJob job = enqueueAndAssign("worker-1");
+        service.result("worker-1", job.jobId(), gameId, 4, "e7e5");
+
+        assertThatThrownBy(() -> service.result("worker-2", job.jobId(), gameId, 4, "e7e5"))
+                .isInstanceOf(AiJobService.WorkerOwnershipConflictException.class);
+        assertThat(games.match.history().uciMoves()).containsExactly("e7e5");
+        assertThat(jobs.findForResult(job.jobId()).orElseThrow().workerId()).isEqualTo("worker-1");
+    }
+
+    @Test
+    void refusesAChangedRevisionForAnAppliedJob() {
+        AiJob job = enqueueAndAssign("worker-1");
+        service.result("worker-1", job.jobId(), gameId, 4, "e7e5");
+
+        assertThatThrownBy(() -> service.result("worker-1", job.jobId(), gameId, 5, "e7e5"))
+                .isInstanceOf(AiJobService.JobAlreadyCompletedException.class);
+        assertThat(games.match.history().uciMoves()).containsExactly("e7e5");
+    }
+
+    @Test
     void refusesADifferentCandidateForAJobAlreadyApplied() {
         AiJob job = enqueueAndAssign("worker-1");
         service.result("worker-1", job.jobId(), gameId, 4, "e7e5");
@@ -212,8 +224,6 @@ class AiJobServiceTest {
                 .isInstanceOf(AiJobService.InvalidResultException.class);
     }
 
-    // ---------- 2.14.3 fila alinhada com a partida ----------
-
     @Test
     void cancelsOpenJobsOnceTheGameIsOver() {
         AiJob job = enqueueAndAssign("worker-1");
@@ -221,19 +231,18 @@ class AiJobServiceTest {
 
         scheduler.syncAiTurn(games.snapshotOf(games.match));
 
-        assertThat(jobs.find(job.jobId()).orElseThrow().status()).isEqualTo(AiJobStatus.CANCELLED);
+        assertThat(jobs.findForResult(job.jobId()).orElseThrow().status()).isEqualTo(AiJobStatus.CANCELLED);
         assertThat(service.next("worker-1")).isEmpty();
     }
 
     @Test
     void replacesAJobWhoseRevisionNoLongerMatches() {
         AiJob stale = enqueueAndAssign("worker-1");
-        // O humano oferece empate enquanto a IA pensa: a revisão anda sem um lance.
         games.match.offerDraw(HUMAN_SESSION, games.match.revision(), NOW);
 
         scheduler.syncAiTurn(games.snapshotOf(games.match));
 
-        assertThat(jobs.find(stale.jobId()).orElseThrow().status()).isEqualTo(AiJobStatus.CANCELLED);
+        assertThat(jobs.findForResult(stale.jobId()).orElseThrow().status()).isEqualTo(AiJobStatus.CANCELLED);
         AiJob fresh = service.next("worker-1").orElseThrow();
         assertThat(fresh.jobId()).isNotEqualTo(stale.jobId());
         assertThat(fresh.revision()).isEqualTo(games.match.revision());
@@ -248,8 +257,6 @@ class AiJobServiceTest {
                 clock,
                 LEASE_MS);
     }
-
-    // ---------- dublês ----------
 
     private final class InMemoryActionStore implements GameActionStore {
 
@@ -286,7 +293,6 @@ class AiJobServiceTest {
         }
     }
 
-    /** Fila em memória com a mesma regra da tabela: um só trabalho aberto por partida. */
     private static final class InMemoryAiJobStore implements AiJobStore {
 
         private final List<Row> rows = new ArrayList<>();
@@ -367,7 +373,7 @@ class AiJobServiceTest {
         }
 
         @Override
-        public Optional<AiJobState> find(UUID jobId) {
+        public Optional<AiJobState> findForResult(UUID jobId) {
             return row(jobId).map(InMemoryAiJobStore::state);
         }
 

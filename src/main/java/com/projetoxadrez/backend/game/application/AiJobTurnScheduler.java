@@ -7,14 +7,9 @@ import java.time.Instant;
 import java.util.Optional;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
-/**
- * Mantém a fila de trabalhos da IA alinhada com o estado da partida (EAP 2.14.3).
- *
- * <p>A regra é só uma: existe trabalho aberto se, e somente se, a partida está ativa e a vez é de
- * um participante controlado por IA — na revisão atual. Qualquer outra coisa é trabalho obsoleto,
- * que é cancelado em vez de ser entregue.
- */
 @Service
 public class AiJobTurnScheduler implements AiTurnScheduler {
 
@@ -30,6 +25,7 @@ public class AiJobTurnScheduler implements AiTurnScheduler {
     }
 
     @Override
+    @Transactional(propagation = Propagation.MANDATORY)
     public void syncAiTurn(GameSnapshot snapshot) {
         Instant now = clock.instant();
         Optional<Side> aiSide = aiSideToMove(snapshot);
@@ -42,8 +38,6 @@ public class AiJobTurnScheduler implements AiTurnScheduler {
         if (open.isPresent() && open.get().revision() == snapshot.revision()) {
             return;
         }
-        // Trabalho de uma revisão que já passou: a partida andou sem ele (uma oferta de empate,
-        // por exemplo). Entregá-lo só produziria STALE_REVISION na devolução.
         open.ifPresent(job -> store.cancel(job.jobId(), now));
         store.enqueue(
                 snapshot.gameId(),
