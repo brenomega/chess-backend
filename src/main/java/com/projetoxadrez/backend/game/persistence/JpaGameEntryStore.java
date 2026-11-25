@@ -24,15 +24,14 @@ public class JpaGameEntryStore implements GameEntryStore {
     }
 
     @Override
-    public Optional<Game> findById(UUID gameId) {
-        return repository.findWithParticipantsById(gameId).map(JpaGameEntryStore::toDomain);
+    public Optional<Game> findByIdForUpdate(UUID gameId) {
+        return repository.findByIdForUpdate(gameId).map(JpaGameEntryStore::toDomain);
     }
 
     @Override
-    public Optional<Game> findPrivateWaitingByEntryCode(String entryCode) {
-        return repository.findByEntryCodeAndStatusAndVisibility(
-                        entryCode, GameStatus.WAITING, GameVisibility.PRIVATE)
-                .map(JpaGameEntryStore::toDomain);
+    public Optional<UUID> findPrivateWaitingIdByEntryCode(String entryCode) {
+        return repository.findIdByEntryCodeAndStatusAndVisibility(
+                entryCode, GameStatus.WAITING, GameVisibility.PRIVATE);
     }
 
     @Override
