@@ -15,7 +15,7 @@ node "Servidor da aplicação" as apphost {
 }
 
 node "Banco de dados" as dbhost {
-  database "PostgreSQL" as db
+  database "PostgreSQL 17" as db
 }
 
 frontend --> jar : HTTPS / WebSocket
@@ -25,5 +25,12 @@ ai --> jar : HTTP/JSON\n/v1/ai/jobs/next e /v1/ai/jobs/result
 note bottom of apphost
 Nós são lógicos: Backend, IA e PostgreSQL
 podem ser colocados na mesma máquina.
+No Compose local, o backend aguarda o PostgreSQL
+e aplica as migrations Flyway na inicialização.
+end note
+
+note bottom of dbhost
+No Compose local, o banco usa volume persistente
+e atende pela rede interna do projeto.
 end note
 @enduml
