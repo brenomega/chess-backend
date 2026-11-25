@@ -2,10 +2,10 @@ package com.projetoxadrez.backend.game;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
-import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -174,12 +174,19 @@ class AiConcurrencyIntegrationTest {
     @Test
     void rejectsInvalidClaimsAndLeavesTheJobAvailable() {
         CreatedGame game = createGame(createSession(), "AI_VS_AI", null, "PUBLIC");
+        UUID pendingJob = jdbc.queryForObject("SELECT id FROM chess.ai_job WHERE game_id = ?", UUID.class, game.id());
         String maxLengthWorkerId = "a".repeat(63) + "\uD83D\uDE80";
 
         assertValidationError(post("/v1/ai/jobs/next", null, null));
         assertValidationError(next(maxLengthWorkerId + "a"));
+        assertValidationError(next("worker\0id"));
+        assertThat(jobState(pendingJob, "status")).isEqualTo("PENDING");
+        assertThat(jobState(pendingJob, "worker_id")).isNull();
+        assertThat(gameState(game.id(), "revision")).isEqualTo("0");
+        assertThat(gameState(game.id(), "move_history")).isNullOrEmpty();
 
         Job claimed = claim(maxLengthWorkerId);
+        assertThat(claimed.id()).isEqualTo(pendingJob);
         assertThat(claimed.gameId()).isEqualTo(game.id());
         assertThat(jobState(claimed.id(), "worker_id")).isEqualTo(maxLengthWorkerId);
     }
@@ -200,21 +207,24 @@ class AiConcurrencyIntegrationTest {
         ObjectNode missingRevision = payload.deepCopy();
         missingRevision.remove("revision");
         assertValidationError(postResult(missingRevision));
+        assertValidationError(postResult(payload.deepCopy().put("revision", 0.5)));
         assertError(result("stranger", job, "e2e4"), 409, "WORKER_OWNERSHIP_CONFLICT");
         assertError(postResult(payload.deepCopy().put("gameId", UUID.randomUUID().toString())), 400, "VALIDATION_ERROR");
         assertError(postResult(payload.deepCopy().put("revision", 1)), 409, "STALE_REVISION");
         assertError(result("owner", job, "e2e5"), 422, "ILLEGAL_MOVE");
         assertError(result("owner", job, "???"), 400, "INVALID_CANDIDATE");
         assertThat(jobState(job.id(), "status")).isEqualTo("ASSIGNED");
+        assertThat(jobState(job.id(), "worker_id")).isEqualTo("owner");
         assertThat(gameState(game.id(), "revision")).isEqualTo("0");
-        verifyNoInteractions(subscriptions);
+        assertThat(gameState(game.id(), "move_history")).isNullOrEmpty();
+        verify(subscriptions, never()).publish(any());
 
         CompletableFuture<ApiResponse> replay = transaction.execute(status -> {
             assertThat(aiJobs.result("owner", job.id(), game.id(), 0, "e2e4").revision()).isEqualTo(1);
             int pid = backendPid();
             CompletableFuture<ApiResponse> pending = sendAsync("/v1/ai/jobs/result", payload);
             awaitBlockedBy(pid);
-            verifyNoInteractions(subscriptions);
+            verify(subscriptions, never()).publish(any());
             return pending;
         });
         ApiResponse applied = response(replay);
@@ -233,7 +243,7 @@ class AiConcurrencyIntegrationTest {
         assertThat(openRevisions(game.id())).containsExactly(1L);
         verify(subscriptions).publish(argThat(snapshot ->
                 snapshot.gameId().equals(game.id()) && snapshot.revision() == 1));
-        verifyNoMoreInteractions(subscriptions);
+        verify(subscriptions).publish(any());
 
         Job reply = claim("other-worker");
         assertThat(reply.body().at("/position/sideToMove").asText()).isEqualTo("BLACK");
@@ -268,7 +278,7 @@ class AiConcurrencyIntegrationTest {
         assertThat(jobState(job.id(), "worker_id")).isEqualTo("second");
         assertThat(openRevisions(game.id())).containsExactly(0L);
         assertThat(gameState(game.id(), "revision")).isEqualTo("0");
-        verifyNoInteractions(subscriptions);
+        verify(subscriptions, never()).publish(any());
         assertThat(result("second", job, "e2e4").status()).isEqualTo(200);
         assertThat(gameState(game.id(), "move_history")).isEqualTo("e2e4");
     }
@@ -312,7 +322,7 @@ class AiConcurrencyIntegrationTest {
             assertThat(openRevisions(game.id())).containsExactly(1L);
         }
         verify(subscriptions).publish(committed);
-        verifyNoMoreInteractions(subscriptions);
+        verify(subscriptions).publish(any());
     }
 
     @Test
@@ -328,7 +338,7 @@ class AiConcurrencyIntegrationTest {
         assertThat(jobState(job.id(), "status")).isEqualTo("ASSIGNED");
         assertThat(gameState(game.id(), "revision")).isEqualTo("0");
         assertThat(openRevisions(game.id())).containsExactly(0L);
-        verifyNoInteractions(subscriptions);
+        verify(subscriptions, never()).publish(any());
     }
 
     @Test
@@ -370,13 +380,13 @@ class AiConcurrencyIntegrationTest {
     }
 
     @Test
-    void commitsClockTimeoutAndCancelsTheJobEvenWhenTheCandidateIsRejected() {
+    void commitsClockTimeoutAndCancelsTheJobBeforeParsingAMalformedCandidate() {
         CreatedGame game = createGame(createSession(), "AI_VS_AI", null, "PUBLIC");
         now.set(START.plusSeconds(599));
         Job job = claim("owner");
         now.set(START.plusSeconds(600));
 
-        assertError(result("owner", job, "e2e4"), 422, "INVALID_GAME_STATE");
+        assertError(result("owner", job, "???"), 422, "INVALID_GAME_STATE");
 
         assertThat(gameState(game.id(), "status")).isEqualTo("FINISHED");
         assertThat(gameState(game.id(), "result_outcome")).isEqualTo("BLACK_WIN");
@@ -386,8 +396,9 @@ class AiConcurrencyIntegrationTest {
         assertThat(jobState(job.id(), "status")).isEqualTo("CANCELLED");
         assertThat(openRevisions(game.id())).isEmpty();
         verify(subscriptions).publish(argThat(snapshot ->
-                snapshot.gameId().equals(game.id()) && snapshot.result().reason().equals("TIMEOUT")));
-        verifyNoMoreInteractions(subscriptions);
+                snapshot.gameId().equals(game.id()) && snapshot.revision() == 1
+                        && snapshot.result() != null && snapshot.result().reason().equals("TIMEOUT")));
+        verify(subscriptions).publish(any());
     }
 
     private <T> T whileResultWaits(Job job, Supplier<T> action, String expectedError) {
@@ -398,7 +409,7 @@ class AiConcurrencyIntegrationTest {
             result.set(sendAsync("/v1/ai/jobs/result", resultPayload("owner", job, "e2e4")));
             awaitBlockedBy(pid);
             T outcome = action.get();
-            verifyNoInteractions(subscriptions);
+            verify(subscriptions, never()).publish(any());
             return outcome;
         });
         assertError(response(result.get()), 409, expectedError);

@@ -1,5 +1,6 @@
 package com.projetoxadrez.backend.game.rest;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.projetoxadrez.backend.game.application.AiJobService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -29,11 +30,12 @@ public class AiJobController {
     @PostMapping("/result")
     @ResponseStatus(HttpStatus.OK)
     public AiJobResultResponse result(@RequestBody AiJobResultRequest request) {
-        if (request.revision() == null) {
+        JsonNode revision = request.revision();
+        if (revision == null || !revision.isIntegralNumber() || !revision.canConvertToLong()) {
             throw new AiJobService.InvalidResultException();
         }
         AiJobService.AiJobOutcome outcome = service.result(
-                request.workerId(), request.jobId(), request.gameId(), request.revision(), request.uci());
+                request.workerId(), request.jobId(), request.gameId(), revision.longValue(), request.uci());
         return new AiJobResultResponse("APPLIED", outcome.gameId(), outcome.revision());
     }
 }

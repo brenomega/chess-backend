@@ -81,7 +81,7 @@ public class AiJobService {
     }
 
     private static void requireWorkerId(String workerId) {
-        if (workerId == null || workerId.isBlank()
+        if (workerId == null || workerId.isBlank() || workerId.indexOf(0) >= 0
                 || workerId.codePointCount(0, workerId.length()) > MAX_WORKER_ID_LENGTH) {
             throw new InvalidResultException();
         }

@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 public final class Match {
 
@@ -179,20 +180,25 @@ public final class Match {
 
     public void applyMove(UUID sessionId, long expectedRevision, Move move, Instant now) {
         lastActionAt = now;
-        applyMoveFrom(requireParticipant(sessionId), expectedRevision, move, now);
+        applyMoveFrom(requireParticipant(sessionId), expectedRevision, () -> move, now);
     }
 
     public void applyAiMove(Side side, long expectedRevision, Move move, Instant now) {
-        lastActionAt = now;
-        requireAiParticipant(side);
-        applyMoveFrom(side, expectedRevision, move, now);
+        applyAiCandidate(side, expectedRevision, () -> move, now);
     }
 
-    private void applyMoveFrom(Side side, long expectedRevision, Move move, Instant now) {
+    public void applyAiCandidate(Side side, long expectedRevision, Supplier<Move> candidate, Instant now) {
+        lastActionAt = now;
+        requireAiParticipant(side);
+        applyMoveFrom(side, expectedRevision, candidate, now);
+    }
+
+    private void applyMoveFrom(Side side, long expectedRevision, Supplier<Move> candidate, Instant now) {
         requireActive(now);
         requireTurn(side);
         requireRevision(expectedRevision);
 
+        Move move = candidate.get();
         if (!position.legalMoves().contains(move)) {
             throw new IllegalMoveException();
         }
