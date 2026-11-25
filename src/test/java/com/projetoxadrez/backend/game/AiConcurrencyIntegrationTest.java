@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.util.RawValue;
 import com.projetoxadrez.backend.game.application.AiJob;
 import com.projetoxadrez.backend.game.application.AiJobService;
 import com.projetoxadrez.backend.game.application.GameActionService;
@@ -59,6 +60,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 class AiConcurrencyIntegrationTest {
 
     private static final Instant START = Instant.parse("2026-10-02T15:00:00Z");
+    private static final String BLANK_UCI = "   ";
 
     @Container
     static final PostgreSQLContainer<?> postgresql = new PostgreSQLContainer<>("postgres:17-alpine");
@@ -178,6 +180,10 @@ class AiConcurrencyIntegrationTest {
         String maxLengthWorkerId = "a".repeat(63) + "\uD83D\uDE80";
 
         assertValidationError(post("/v1/ai/jobs/next", null, null));
+        assertValidationError(post("/v1/ai/jobs/next", objectMapper.createObjectNode().put("workerId", 123), null));
+        ObjectNode unpairedHighSurrogate = objectMapper.createObjectNode()
+                .putRawValue("workerId", new RawValue("\"worker-\\uD800\""));
+        assertValidationError(post("/v1/ai/jobs/next", unpairedHighSurrogate, null));
         assertValidationError(next(maxLengthWorkerId + "a"));
         assertValidationError(next("worker\0id"));
         assertThat(jobState(pendingJob, "status")).isEqualTo("PENDING");
@@ -194,7 +200,9 @@ class AiConcurrencyIntegrationTest {
     @Test
     void acceptsOnlyValidResultsAndSerializesAnIdenticalReplay() {
         CreatedGame game = createGame(createSession(), "AI_VS_AI", null, "PUBLIC");
-        Job job = claim("owner");
+        int numericWorkerId = 123;
+        String owner = Integer.toString(numericWorkerId);
+        Job job = claim(owner);
         assertThat(job.gameId()).isEqualTo(game.id());
         assertThat(job.revision()).isZero();
         assertThat(job.body().at("/position/sideToMove").asText()).isEqualTo("WHITE");
@@ -202,7 +210,11 @@ class AiConcurrencyIntegrationTest {
         assertThat(job.body().path("timeBudgetMs").asLong()).isPositive();
         assertThat(Instant.parse(job.body().path("expiresAt").asText())).isEqualTo(START.plusSeconds(15));
 
-        ObjectNode payload = resultPayload("owner", job, "e2e4");
+        ObjectNode payload = resultPayload(owner, job, "e2e4");
+        assertValidationError(postResult(payload.deepCopy().put("workerId", numericWorkerId)));
+        ObjectNode unpairedLowSurrogate = payload.deepCopy()
+                .putRawValue("workerId", new RawValue("\"worker-\\uDC00\""));
+        assertValidationError(postResult(unpairedLowSurrogate));
         assertValidationError(postResult(payload.deepCopy().put("jobId", "not-a-uuid")));
         ObjectNode missingRevision = payload.deepCopy();
         missingRevision.remove("revision");
@@ -211,16 +223,16 @@ class AiConcurrencyIntegrationTest {
         assertError(result("stranger", job, "e2e4"), 409, "WORKER_OWNERSHIP_CONFLICT");
         assertError(postResult(payload.deepCopy().put("gameId", UUID.randomUUID().toString())), 400, "VALIDATION_ERROR");
         assertError(postResult(payload.deepCopy().put("revision", 1)), 409, "STALE_REVISION");
-        assertError(result("owner", job, "e2e5"), 422, "ILLEGAL_MOVE");
-        assertError(result("owner", job, "???"), 400, "INVALID_CANDIDATE");
+        assertError(result(owner, job, "e2e5"), 422, "ILLEGAL_MOVE");
+        assertError(result(owner, job, BLANK_UCI), 400, "INVALID_CANDIDATE");
         assertThat(jobState(job.id(), "status")).isEqualTo("ASSIGNED");
-        assertThat(jobState(job.id(), "worker_id")).isEqualTo("owner");
+        assertThat(jobState(job.id(), "worker_id")).isEqualTo(owner);
         assertThat(gameState(game.id(), "revision")).isEqualTo("0");
         assertThat(gameState(game.id(), "move_history")).isNullOrEmpty();
         verify(subscriptions, never()).publish(any());
 
         CompletableFuture<ApiResponse> replay = transaction.execute(status -> {
-            assertThat(aiJobs.result("owner", job.id(), game.id(), 0, "e2e4").revision()).isEqualTo(1);
+            assertThat(aiJobs.result(owner, job.id(), game.id(), 0, "e2e4").revision()).isEqualTo(1);
             int pid = backendPid();
             CompletableFuture<ApiResponse> pending = sendAsync("/v1/ai/jobs/result", payload);
             awaitBlockedBy(pid);
@@ -232,14 +244,14 @@ class AiConcurrencyIntegrationTest {
         assertThat(applied.body().path("status").asText()).isEqualTo("APPLIED");
         assertThat(applied.body().path("gameId").asText()).isEqualTo(game.id().toString());
         assertThat(applied.body().path("revision").asLong()).isEqualTo(1);
-        assertThat(result("owner", job, "e2e4")).isEqualTo(applied);
+        assertThat(result(owner, job, "e2e4")).isEqualTo(applied);
         assertError(result("stranger", job, "e2e4"), 409, "WORKER_OWNERSHIP_CONFLICT");
-        assertError(result("owner", job, "d2d4"), 409, "JOB_ALREADY_COMPLETED");
+        assertError(result(owner, job, "d2d4"), 409, "JOB_ALREADY_COMPLETED");
 
         assertThat(gameState(game.id(), "move_history")).isEqualTo("e2e4");
         assertThat(gameState(game.id(), "revision")).isEqualTo("1");
         assertThat(jobState(job.id(), "status")).isEqualTo("COMPLETED");
-        assertThat(jobState(job.id(), "worker_id")).isEqualTo("owner");
+        assertThat(jobState(job.id(), "worker_id")).isEqualTo(owner);
         assertThat(openRevisions(game.id())).containsExactly(1L);
         verify(subscriptions).publish(argThat(snapshot ->
                 snapshot.gameId().equals(game.id()) && snapshot.revision() == 1));
@@ -380,13 +392,16 @@ class AiConcurrencyIntegrationTest {
     }
 
     @Test
-    void commitsClockTimeoutAndCancelsTheJobBeforeParsingAMalformedCandidate() {
+    void commitsClockTimeoutAndCancelsTheJobBeforeRejectingABlankCandidate() {
         CreatedGame game = createGame(createSession(), "AI_VS_AI", null, "PUBLIC");
         now.set(START.plusSeconds(599));
         Job job = claim("owner");
         now.set(START.plusSeconds(600));
 
-        assertError(result("owner", job, "???"), 422, "INVALID_GAME_STATE");
+        ObjectNode missingUci = resultPayload("owner", job, "e2e4");
+        missingUci.remove("uci");
+        assertValidationError(postResult(missingUci));
+        assertError(result("owner", job, BLANK_UCI), 422, "INVALID_GAME_STATE");
 
         assertThat(gameState(game.id(), "status")).isEqualTo("FINISHED");
         assertThat(gameState(game.id(), "result_outcome")).isEqualTo("BLACK_WIN");

@@ -22,7 +22,7 @@ public class AiJobController {
 
     @PostMapping("/next")
     public ResponseEntity<AiJobResponse> next(@RequestBody AiJobNextRequest request) {
-        return service.next(request.workerId())
+        return service.next(requireTextWorkerId(request.workerId()))
                 .map(job -> ResponseEntity.ok(AiJobResponse.from(job)))
                 .orElseGet(() -> ResponseEntity.noContent().build());
     }
@@ -35,7 +35,15 @@ public class AiJobController {
             throw new AiJobService.InvalidResultException();
         }
         AiJobService.AiJobOutcome outcome = service.result(
-                request.workerId(), request.jobId(), request.gameId(), revision.longValue(), request.uci());
+                requireTextWorkerId(request.workerId()), request.jobId(), request.gameId(), revision.longValue(),
+                request.uci());
         return new AiJobResultResponse("APPLIED", outcome.gameId(), outcome.revision());
+    }
+
+    private static String requireTextWorkerId(JsonNode workerId) {
+        if (workerId == null || !workerId.isTextual()) {
+            throw new AiJobService.InvalidResultException();
+        }
+        return workerId.textValue();
     }
 }

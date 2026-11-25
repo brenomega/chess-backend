@@ -49,7 +49,7 @@ O Backend verifica a titularidade do trabalho antes de tratar reenvios. Para um 
 
 O corpo é `{"code":"...","message":"...","details":{}}`.
 
-`/next` e `/result` exigem um corpo JSON e um `workerId` de até 64 pontos de código, sem U+0000 e com pelo menos um caractere que não seja espaço em branco. Um corpo ausente ou ilegível, um UUID malformado, um campo obrigatório ausente, uma revisão fora do formato ou um `workerId` inválido retorna `400 VALIDATION_ERROR`.
+`/next` e `/result` exigem um corpo JSON e um `workerId` do tipo string com Unicode válido, até 64 pontos de código, sem U+0000 e com pelo menos um caractere que não seja espaço em branco. Um corpo ausente ou ilegível, um UUID malformado, um campo obrigatório ausente, uma revisão fora do formato ou um `workerId` inválido retorna `400 VALIDATION_ERROR`.
 
 | Status | Códigos essenciais |
 | --- | --- |
