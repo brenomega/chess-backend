@@ -238,12 +238,12 @@ class GameEntryControllerTest {
         }
 
         @Override
-        public Optional<Game> findById(UUID gameId) {
+        public Optional<Game> findByIdForUpdate(UUID gameId) {
             return Optional.ofNullable(games.get(gameId));
         }
 
         @Override
-        public Optional<Game> findPrivateWaitingByEntryCode(String entryCode) {
+        public Optional<UUID> findPrivateWaitingIdByEntryCode(String entryCode) {
             return games.values().stream()
                     .filter(game -> game.visibility() == GameVisibility.PRIVATE)
                     .filter(game -> game.status() == GameStatus.WAITING)
@@ -251,6 +251,7 @@ class GameEntryControllerTest {
                             .map(GameEntryCode::value)
                             .filter(entryCode::equals)
                             .isPresent())
+                    .map(game -> game.id().value())
                     .findFirst();
         }
 
