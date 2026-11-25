@@ -1,6 +1,7 @@
 package com.projetoxadrez.backend.game.application;
 
 import com.projetoxadrez.backend.game.chess.Move;
+import com.projetoxadrez.backend.game.chess.Side;
 import com.projetoxadrez.backend.game.domain.Match;
 import java.time.Clock;
 import java.util.UUID;
@@ -22,11 +23,17 @@ public class GameActionService {
 
     private final GameActionStore store;
     private final GameStatePublisher statePublisher;
+    private final AiTurnScheduler aiTurnScheduler;
     private final Clock clock;
 
-    public GameActionService(GameActionStore store, GameStatePublisher statePublisher, Clock clock) {
+    public GameActionService(
+            GameActionStore store,
+            GameStatePublisher statePublisher,
+            AiTurnScheduler aiTurnScheduler,
+            Clock clock) {
         this.store = store;
         this.statePublisher = statePublisher;
+        this.aiTurnScheduler = aiTurnScheduler;
         this.clock = clock;
     }
 
@@ -61,6 +68,31 @@ public class GameActionService {
     }
 
     /**
+     * Aplica o lance devolvido pelo worker de IA (EAP 2.14.3).
+     *
+     * <p>Ao contrário das ações humanas, não reenfileira o turno seguinte: quem fecha o trabalho e
+     * decide o próximo é {@code AiJobService}, para não cancelar o trabalho que está sendo
+     * concluído neste mesmo instante.
+     */
+    @Transactional(noRollbackFor = Match.GameTimedOutException.class)
+    public GameSnapshot applyAiMove(UUID gameId, Side side, long expectedRevision, String uci) {
+        Match match = load(gameId);
+        Move move;
+        try {
+            move = Move.fromUci(uci);
+        } catch (IllegalArgumentException exception) {
+            throw new InvalidMoveFormatException();
+        }
+        try {
+            match.applyAiMove(side, expectedRevision, move, clock.instant());
+        } catch (Match.GameTimedOutException exception) {
+            publish(match);
+            throw exception;
+        }
+        return publish(match);
+    }
+
+    /**
      * Executa a ação e grava. Se o relógio encerrou a partida, o fim é gravado e publicado mesmo
      * com a ação rejeitada: o timeout é um fato novo, não um efeito da ação (EAP 2.10.2).
      */
@@ -68,10 +100,17 @@ public class GameActionService {
         try {
             action.run();
         } catch (Match.GameTimedOutException exception) {
-            publish(match);
+            publishAndSyncAi(match);
             throw exception;
         }
-        return publish(match);
+        return publishAndSyncAi(match);
+    }
+
+    /** Grava, publica e acerta a fila da IA: a ação humana pode ter passado a vez para ela. */
+    private GameSnapshot publishAndSyncAi(Match match) {
+        GameSnapshot snapshot = publish(match);
+        aiTurnScheduler.syncAiTurn(snapshot);
+        return snapshot;
     }
 
     private Match load(UUID gameId) {

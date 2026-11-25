@@ -48,6 +48,38 @@ class MatchTest {
                 null);
     }
 
+    private static Match withParticipants(List<Game.Participant> participants) {
+        ChessPosition position = ChessPosition.initial();
+        return Match.rehydrate(
+                new GameId(UUID.randomUUID()),
+                GameStatus.ACTIVE,
+                TEN_MINUTES,
+                7,
+                participants,
+                position,
+                MoveHistory.empty(),
+                null,
+                600_000,
+                600_000,
+                position.sideToMove(),
+                NOW,
+                null,
+                null,
+                null);
+    }
+
+    /** Humano de brancas contra IA de pretas. */
+    private static Match againstAi() {
+        return withParticipants(List.of(
+                new Game.Participant(Side.WHITE, WHITE_SESSION, "HUMAN"),
+                new Game.Participant(Side.BLACK, null, "AI")));
+    }
+
+    private static Match aiVersusAi() {
+        return withParticipants(List.of(
+                new Game.Participant(Side.WHITE, null, "AI"), new Game.Participant(Side.BLACK, null, "AI")));
+    }
+
     // ---------- 2.9.1 lance ----------
 
     @Test
@@ -319,5 +351,80 @@ class MatchTest {
 
         assertThat(match.settleTimeout(NOW.plus(Duration.ofHours(5)))).isFalse();
         assertThat(match.status()).isEqualTo(GameStatus.ACTIVE);
+    }
+
+    // ---------- 2.14.3 turnos controlados por IA ----------
+
+    @Test
+    void appliesAiMoveForTheSideTheAiControls() {
+        Match match = againstAi();
+        match.applyMove(WHITE_SESSION, 7, Move.fromUci("e2e4"), NOW);
+
+        match.applyAiMove(Side.BLACK, match.revision(), Move.fromUci("e7e5"), NOW);
+
+        assertThat(match.history().uciMoves()).containsExactly("e2e4", "e7e5");
+        assertThat(match.activeSide()).isEqualTo(Side.WHITE);
+        assertThat(match.revision()).isEqualTo(9);
+    }
+
+    @Test
+    void refusesAiMoveOnASidePlayedByAHuman() {
+        Match match = againstAi();
+
+        assertThatThrownBy(() -> match.applyAiMove(Side.WHITE, 7, Move.fromUci("e2e4"), NOW))
+                .isInstanceOf(Match.NotAParticipantException.class);
+        assertThat(match.revision()).isEqualTo(7);
+    }
+
+    @Test
+    void holdsTheAiToTheSameRulesAsAHuman() {
+        Match match = againstAi();
+
+        // Fora da vez: as brancas ainda não jogaram.
+        assertThatThrownBy(() -> match.applyAiMove(Side.BLACK, 7, Move.fromUci("e7e5"), NOW))
+                .isInstanceOf(Match.NotYourTurnException.class);
+
+        match.applyMove(WHITE_SESSION, 7, Move.fromUci("e2e4"), NOW);
+
+        // Lance ilegal e revisão desatualizada são recusados como seriam de um humano.
+        assertThatThrownBy(() -> match.applyAiMove(Side.BLACK, match.revision(), Move.fromUci("e7e4"), NOW))
+                .isInstanceOf(Match.IllegalMoveException.class);
+        assertThatThrownBy(() -> match.applyAiMove(Side.BLACK, 7, Move.fromUci("e7e5"), NOW))
+                .isInstanceOf(Match.StaleRevisionException.class);
+        assertThat(match.history().uciMoves()).containsExactly("e2e4");
+    }
+
+    @Test
+    void reportsWhichSideTheAiMustPlayNow() {
+        Match match = againstAi();
+        assertThat(match.aiSideToMove()).isEmpty();
+
+        match.applyMove(WHITE_SESSION, 7, Move.fromUci("e2e4"), NOW);
+        assertThat(match.aiSideToMove()).contains(Side.BLACK);
+
+        match.applyAiMove(Side.BLACK, match.revision(), Move.fromUci("e7e5"), NOW);
+        assertThat(match.aiSideToMove()).isEmpty();
+    }
+
+    @Test
+    void alternatesBetweenTwoAisAndStopsWhenTheGameEnds() {
+        Match match = aiVersusAi();
+
+        assertThat(match.aiSideToMove()).contains(Side.WHITE);
+        match.applyAiMove(Side.WHITE, match.revision(), Move.fromUci("e2e4"), NOW);
+        assertThat(match.aiSideToMove()).contains(Side.BLACK);
+        match.applyAiMove(Side.BLACK, match.revision(), Move.fromUci("e7e5"), NOW);
+        assertThat(match.aiSideToMove()).contains(Side.WHITE);
+        assertThat(match.history().uciMoves()).containsExactly("e2e4", "e7e5");
+    }
+
+    @Test
+    void stopsAskingTheAiOnceTheGameIsOver() {
+        Match match = againstAi();
+        match.abandon(WHITE_SESSION, NOW);
+
+        assertThat(match.aiSideToMove()).isEmpty();
+        assertThatThrownBy(() -> match.applyAiMove(Side.BLACK, match.revision(), Move.fromUci("e7e5"), NOW))
+                .isInstanceOf(Match.InvalidGameStateException.class);
     }
 }

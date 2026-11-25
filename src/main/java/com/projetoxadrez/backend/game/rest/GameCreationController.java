@@ -33,6 +33,8 @@ public class GameCreationController {
         return service.create(
                 sessionId,
                 request == null ? null : request.visibility(),
-                request == null ? null : request.timeControl());
+                request == null ? null : request.timeControl(),
+                request == null ? null : request.mode(),
+                request == null ? null : request.side());
     }
 }

@@ -9,7 +9,7 @@ O cliente envia JSON em UTF-8. Identificadores são UUIDs, instantes usam ISO-86
 | `POST /v1/sessions` | corpo vazio | `201` com `sessionId`, `recoveryToken` e `expiresAt` |
 | `POST /v1/sessions/recover` | `{"recoveryToken":"..."}` | `200` com `sessionId`, `recoveryToken` e `expiresAt` |
 | `GET /v1/games?page=0&size=20` | token de sessão | `200` com página de `games`, contendo `gameId`, `status`, `visibility`, `timeControl` e `createdAt` |
-| `POST /v1/games` | token de sessão; `{"visibility":"PUBLIC|PRIVATE","timeControl":{"initialTimeMs":600000,"incrementMs":0}}` | `201` com o snapshot da partida em espera |
+| `POST /v1/games` | token de sessão; `{"visibility":"PUBLIC|PRIVATE","timeControl":{"initialTimeMs":600000,"incrementMs":0},"mode":"HUMAN_VS_HUMAN|HUMAN_VS_AI|AI_VS_AI","side":"WHITE|BLACK"}` | `201` com o snapshot da partida |
 | `POST /v1/games/join` | token de sessão; `{"entryCode":"G7K2XP"}` | `200` com o snapshot da partida `PRIVATE` ativa, incluindo `gameId` |
 | `POST /v1/games/{gameId}/join` | token de sessão; corpo vazio para `PUBLIC` ou `{"entryCode":"G7K2XP"}` para `PRIVATE` | `200` com o snapshot da partida ativa |
 | `GET /v1/games/{gameId}` | token de sessão de participante | `200` com o snapshot da partida |
@@ -29,6 +29,24 @@ O cliente envia JSON em UTF-8. Identificadores são UUIDs, instantes usam ISO-86
   "createdAt": "2026-10-02T15:00:00Z"
 }
 ```
+
+### Modos de partida
+
+`mode` escolhe a composição da partida e é opcional: ausente, vale `HUMAN_VS_HUMAN`, que era o único modo antes, então clientes que não conhecem o campo continuam funcionando.
+
+| Modo | Participantes | Estado inicial |
+| --- | --- | --- |
+| `HUMAN_VS_HUMAN` | criador como `WHITE`, segundo guest como `BLACK` | `WAITING` até alguém entrar |
+| `HUMAN_VS_AI` | criador no lado de `side`, IA no lado oposto | `ACTIVE`, relógio correndo |
+| `AI_VS_AI` | duas IAs | `ACTIVE`, relógio correndo |
+
+Partidas com IA não esperam ninguém, por isso já nascem `ACTIVE`. São sempre `PUBLIC` e sem `entryCode`: não há como entrar nelas, e `visibility` enviado é ignorado. Elas não aparecem no lobby, que lista apenas partidas em `WAITING`.
+
+`side` escolhe o lado do humano em `HUMAN_VS_AI` e vale `WHITE` quando ausente; nos outros modos é ignorado. As brancas sempre começam, então criar uma partida com `side` igual a `BLACK` faz a IA jogar primeiro.
+
+Uma partida `AI_VS_AI` pode ser assinada por qualquer sessão, já que existe para ser assistida. Nos outros modos, `game.subscribe` continua restrito aos participantes.
+
+Quando a vez é de um participante `AI`, o Backend enfileira o trabalho para o worker e aplica o lance que ele devolver, pelas mesmas regras de um lance humano. O cliente não faz nada de diferente: recebe um `game.state` novo quando a IA joga. O contrato entre Backend e worker está em `docs/contracts/backend-ai.md` e não faz parte da API do cliente.
 
 ### Snapshot de partida
 

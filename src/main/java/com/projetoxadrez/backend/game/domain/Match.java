@@ -195,7 +195,23 @@ public final class Match {
      */
     public void applyMove(UUID sessionId, long expectedRevision, Move move, Instant now) {
         lastActionAt = now;
-        Side side = requireParticipant(sessionId);
+        applyMoveFrom(requireParticipant(sessionId), expectedRevision, move, now);
+    }
+
+    /**
+     * Aplica o lance de um participante controlado por IA (EAP 2.14.3).
+     *
+     * <p>O lado vem explícito porque uma partida entre duas IAs tem dois participantes sem sessão,
+     * que a busca por sessão não distinguiria. Fora isso, o lance passa pelas mesmas verificações
+     * de um lance humano: a IA não tem licença para jogar fora da vez nem para lance ilegal.
+     */
+    public void applyAiMove(Side side, long expectedRevision, Move move, Instant now) {
+        lastActionAt = now;
+        requireAiParticipant(side);
+        applyMoveFrom(side, expectedRevision, move, now);
+    }
+
+    private void applyMoveFrom(Side side, long expectedRevision, Move move, Instant now) {
         requireActive(now);
         requireTurn(side);
         requireRevision(expectedRevision);
@@ -342,6 +358,25 @@ public final class Match {
         clockUpdatedAt = null;
         endedAt = endInstant != null ? endInstant : lastActionAt;
         revision++;
+    }
+
+    /** Lado controlado por IA cuja vez é agora, se houver (EAP 2.14.3). */
+    public Optional<Side> aiSideToMove() {
+        if (status != GameStatus.ACTIVE || activeSide == null) {
+            return Optional.empty();
+        }
+        return participants.stream()
+                .filter(participant -> participant.side() == activeSide && "AI".equals(participant.kind()))
+                .map(Game.Participant::side)
+                .findFirst();
+    }
+
+    private void requireAiParticipant(Side side) {
+        boolean controlledByAi = participants.stream()
+                .anyMatch(participant -> participant.side() == side && "AI".equals(participant.kind()));
+        if (!controlledByAi) {
+            throw new NotAParticipantException();
+        }
     }
 
     private Side requireParticipant(UUID sessionId) {
