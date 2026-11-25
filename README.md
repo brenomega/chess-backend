@@ -58,15 +58,25 @@ Execute na raiz do repositório em Bash com `curl`, `jq` e `openssl`. O smoke us
 
 ## Rollback
 
-Antes de atualizar, guarde a imagem em execução, suspenda as escritas e faça um dump. Execute os blocos no mesmo shell Bash e use o projeto Compose da instalação para salvar a imagem e o dump. Guarde a configuração de banco e schema usada no backup. Prossiga com a atualização depois que todos os comandos tiverem êxito.
+Antes de atualizar, separe o token e o ID de uma sessão que estará válida na restauração e o ID de uma partida dessa sessão. Suspenda as escritas e execute os blocos no mesmo shell Bash, a partir da raiz do repositório. Use o projeto Compose da instalação para salvar a imagem e fazer o dump. Prossiga com a atualização depois que o backup terminar com êxito.
 
 ```bash
 previous_image="chess-backend:rollback-$(openssl rand -hex 8)"
 backup_dir=$(mktemp -d)
-docker image tag "$(docker inspect --format '{{.Image}}' "$(docker compose ps -q backend)")" "$previous_image" &&
-  docker compose stop backend &&
-  docker compose exec -T postgres sh -c 'pg_dump -Fc -U "$POSTGRES_USER" -d "$POSTGRES_DB"' > "$backup_dir/chess.dump" &&
+(
+  set -euo pipefail
+  umask 077
+  postgres_db=$(docker compose exec -T postgres printenv POSTGRES_DB)
+  postgres_user=$(docker compose exec -T postgres printenv POSTGRES_USER)
+  database_schema=$(docker compose exec -T backend printenv DATABASE_SCHEMA)
+  restore_password=$(openssl rand -hex 32)
+  printf 'POSTGRES_DB=%q\nPOSTGRES_USER=%q\nDATABASE_SCHEMA=%q\nPOSTGRES_PASSWORD=%q\n' \
+    "$postgres_db" "$postgres_user" "$database_schema" "$restore_password" > "$backup_dir/restore.env.bash"
+  docker image tag "$(docker inspect --format '{{.Image}}' "$(docker compose ps -q backend)")" "$previous_image"
+  docker compose stop backend
+  docker compose exec -T postgres sh -c 'pg_dump -Fc -U "$POSTGRES_USER" -d "$POSTGRES_DB"' > "$backup_dir/chess.dump"
   docker compose exec -T postgres pg_restore --list < "$backup_dir/chess.dump" > /dev/null
+)
 ```
 
 Se o schema atual passar na validação do Flyway e for compatível com a imagem anterior, recrie somente o backend. Mantenha essa tag em `.env` como `BACKEND_IMAGE` para subidas posteriores com `--no-build`.
@@ -76,13 +86,30 @@ BACKEND_IMAGE="$previous_image" docker compose up -d --wait --wait-timeout 120 \
   --no-deps --no-build --pull never backend
 ```
 
-Migrations podem bloquear tabelas, alterar dados e impedir que a imagem anterior inicie. Em caso de incompatibilidade, interrompa as escritas e restaure o dump em um projeto com volume novo usando a configuração de banco e schema do backup. O dump contém o estado no momento da cópia. Valide o ambiente restaurado antes de redirecionar o tráfego e preserve o volume original para recuperar dados gravados depois do dump.
+Migrations podem bloquear tabelas, alterar dados e impedir que a imagem anterior inicie. Em caso de incompatibilidade, interrompa as escritas e restaure o dump em um projeto com volume novo. Use o banco, o usuário e o schema salvos no backup e a senha gerada para o volume novo. Preserve o volume original para recuperar dados gravados depois do dump. Redirecione o tráfego somente após confirmar a recuperação da sessão e da partida com os IDs anotados.
 
 ```bash
-restore=(docker compose -p "xadrez-restore-$(openssl rand -hex 8)")
-"${restore[@]}" up -d --wait --wait-timeout 120 postgres &&
-  "${restore[@]}" exec -T postgres sh -c 'pg_restore --exit-on-error -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < "$backup_dir/chess.dump" &&
-  BACKEND_IMAGE="$previous_image" BACKEND_PORT=0 "${restore[@]}" up -d --wait --wait-timeout 120 \
-    --no-deps --no-build --pull never backend &&
-  curl -fsS "http://$("${restore[@]}" port backend 8080)/actuator/health"
+(
+  set -euo pipefail
+  source "$backup_dir/restore.env.bash"
+  export POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD DATABASE_SCHEMA
+  export BACKEND_IMAGE="$previous_image" BACKEND_PORT=0
+  restore_project="xadrez-restore-$(openssl rand -hex 8)"
+  restore=(docker compose -f compose.yaml --env-file /dev/null -p "$restore_project")
+  read -rp 'ID da sessão do backup: ' session_id
+  read -rsp 'Token da sessão do backup: ' token
+  printf '\n'
+  read -rp 'ID da partida do backup: ' game_id
+
+  "${restore[@]}" up -d --wait --wait-timeout 120 postgres
+  "${restore[@]}" exec -T postgres sh -c 'pg_restore --exit-on-error -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < "$backup_dir/chess.dump"
+  "${restore[@]}" up -d --wait --wait-timeout 120 --no-deps --no-build --pull never backend
+  base_url="http://$("${restore[@]}" port backend 8080)"
+  jq -n --arg token "$token" '{recoveryToken: $token}' \
+    | curl -fsS -H 'Content-Type: application/json' --data-binary @- "$base_url/v1/sessions/recover" \
+    | jq -e --arg session_id "$session_id" '.sessionId == $session_id' > /dev/null
+  curl -fsS -H "X-Session-Token: $token" "$base_url/v1/games/$game_id" \
+    | jq -e --arg game_id "$game_id" '.gameId == $game_id' > /dev/null
+  printf '%s %s\n' "$restore_project" "$base_url"
+)
 ```
