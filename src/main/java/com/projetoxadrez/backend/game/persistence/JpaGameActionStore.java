@@ -33,11 +33,30 @@ public class JpaGameActionStore implements GameActionStore {
 
     @Override
     public GameSnapshot save(Match match) {
-        GameEntity entity = repository.findWithParticipantsById(match.id().value())
-                .orElseThrow(() -> new IllegalStateException("Game disappeared while acting"));
+        GameEntity entity = lockedGame(match.id().value());
         entity.applyMatchState(match);
         repository.flush();
         return snapshotFactory.persistedSnapshot(entity);
+    }
+
+    @Override
+    public GameSnapshot snapshot(UUID gameId) {
+        return snapshotFactory.persistedSnapshot(lockedGame(gameId));
+    }
+
+    @Override
+    public Optional<String> findActionIdentity(UUID gameId, UUID sessionId, String requestId) {
+        return repository.findActionIdentity(gameId, sessionId, requestId);
+    }
+
+    @Override
+    public void recordAction(UUID gameId, UUID sessionId, String requestId, String identity) {
+        repository.recordAction(gameId, sessionId, requestId, identity);
+    }
+
+    private GameEntity lockedGame(UUID gameId) {
+        return repository.findWithParticipantsById(gameId)
+                .orElseThrow(() -> new IllegalStateException("Game disappeared while acting"));
     }
 
     private static Match toDomain(GameEntity entity) {

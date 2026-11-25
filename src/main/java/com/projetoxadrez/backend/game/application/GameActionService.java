@@ -4,14 +4,15 @@ import com.projetoxadrez.backend.game.chess.Move;
 import com.projetoxadrez.backend.game.chess.Side;
 import com.projetoxadrez.backend.game.domain.Match;
 import java.time.Clock;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.function.BiConsumer;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class GameActionService {
-
-    public static final long ANY_REVISION = -1;
 
     private final GameActionStore store;
     private final GameStatePublisher statePublisher;
@@ -30,28 +31,28 @@ public class GameActionService {
     }
 
     @Transactional(noRollbackFor = Match.GameTimedOutException.class)
-    public GameSnapshot move(UUID gameId, UUID sessionId, long expectedRevision, String uci) {
-        Match match = load(gameId);
+    public GameSnapshot move(Request request, String uci) {
         Move move = parseMove(uci);
-        return act(match, () -> match.applyMove(sessionId, expectedRevision, move, clock.instant()));
+        return act(request, "game.move", move.toUci(),
+                (match, revision) -> match.applyMove(request.sessionId(), revision, move, clock.instant()));
     }
 
     @Transactional(noRollbackFor = Match.GameTimedOutException.class)
-    public GameSnapshot abandon(UUID gameId, UUID sessionId) {
-        Match match = load(gameId);
-        return act(match, () -> match.abandon(sessionId, clock.instant()));
+    public GameSnapshot abandon(Request request) {
+        return act(request, "game.abandon", "",
+                (match, revision) -> match.abandon(request.sessionId(), revision, clock.instant()));
     }
 
     @Transactional(noRollbackFor = Match.GameTimedOutException.class)
-    public GameSnapshot offerDraw(UUID gameId, UUID sessionId, long expectedRevision) {
-        Match match = load(gameId);
-        return act(match, () -> match.offerDraw(sessionId, expectedRevision, clock.instant()));
+    public GameSnapshot offerDraw(Request request) {
+        return act(request, "draw.offer", "",
+                (match, revision) -> match.offerDraw(request.sessionId(), revision, clock.instant()));
     }
 
     @Transactional(noRollbackFor = Match.GameTimedOutException.class)
-    public GameSnapshot respondDraw(UUID gameId, UUID sessionId, long expectedRevision, boolean accept) {
-        Match match = load(gameId);
-        return act(match, () -> match.respondDraw(sessionId, expectedRevision, accept, clock.instant()));
+    public GameSnapshot respondDraw(Request request, boolean accept) {
+        return act(request, "draw.respond", Boolean.toString(accept),
+                (match, revision) -> match.respondDraw(request.sessionId(), revision, accept, clock.instant()));
     }
 
     @Transactional(noRollbackFor = Match.GameTimedOutException.class)
@@ -74,20 +75,37 @@ public class GameActionService {
         }
     }
 
-    private GameSnapshot act(Match match, Runnable action) {
+    private GameSnapshot act(Request request, String type, String payload, BiConsumer<Match, Long> action) {
+        UUID gameId = request.gameId();
+        UUID sessionId = request.sessionId();
+        Match match = load(gameId);
+        match.sideOf(sessionId).orElseThrow(Match.NotAParticipantException::new);
+
+        String identity = type + ":" + Objects.toString(request.revision(), "") + ":" + payload;
+        Optional<String> previous = store.findActionIdentity(gameId, sessionId, request.requestId());
+        if (previous.isPresent()) {
+            if (!previous.orElseThrow().equals(identity)) {
+                throw new RequestIdConflictException();
+            }
+            return store.snapshot(gameId);
+        }
+
+        Long expectedRevision = request.revision();
+        if (expectedRevision == null) {
+            throw new MissingRevisionException();
+        }
+        long previousRevision = match.revision();
         try {
-            action.run();
+            action.accept(match, expectedRevision);
         } catch (Match.GameTimedOutException exception) {
-            publishAndSyncAi(match);
+            saveAndPublish(match, null);
             throw exception;
         }
-        return publishAndSyncAi(match);
-    }
-
-    private GameSnapshot publishAndSyncAi(Match match) {
-        GameSnapshot snapshot = publish(match);
-        aiTurnScheduler.syncAiTurn(snapshot);
-        return snapshot;
+        store.recordAction(gameId, sessionId, request.requestId(), identity);
+        return match.revision() == previousRevision
+                ? store.snapshot(gameId).withClock(
+                        new GameSnapshot.Clock(match.whiteRemainingMs(), match.blackRemainingMs(), match.activeSide()))
+                : saveAndPublish(match, request.connectionId());
     }
 
     private Match load(UUID gameId) {
@@ -98,6 +116,23 @@ public class GameActionService {
         GameSnapshot snapshot = store.save(match);
         statePublisher.publishAfterCommit(snapshot);
         return snapshot;
+    }
+
+    private GameSnapshot saveAndPublish(Match match, String connectionId) {
+        GameSnapshot snapshot = store.save(match);
+        aiTurnScheduler.syncAiTurn(snapshot);
+        statePublisher.publishAfterCommit(snapshot, connectionId);
+        return snapshot;
+    }
+
+    public record Request(
+            UUID gameId, UUID sessionId, String requestId, String connectionId, Long revision) {
+    }
+
+    public static final class MissingRevisionException extends RuntimeException {
+    }
+
+    public static final class RequestIdConflictException extends RuntimeException {
     }
 
     public static final class GameNotFoundException extends RuntimeException {

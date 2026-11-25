@@ -28,6 +28,11 @@ public record GameSnapshot(
         Objects.requireNonNull(clock, "clock must not be null");
     }
 
+    GameSnapshot withClock(Clock reading) {
+        return new GameSnapshot(gameId, status, visibility, entryCode, revision, players, position, reading,
+                drawOffer, result);
+    }
+
     public record Player(Side side, String kind) {
         public Player {
             Objects.requireNonNull(side, "side must not be null");

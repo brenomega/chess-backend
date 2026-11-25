@@ -163,17 +163,17 @@ class AiConcurrencyIntegrationTest {
         CreatedGame game = createGame(human, "HUMAN_VS_AI", humanSide, "PUBLIC");
         if (humanSide.equals("WHITE")) {
             assertNoWork(next("worker"));
-            actions.move(game.id(), human.id(), 0, "e2e4");
+            actions.move(humanAction(game, human, 0), "e2e4");
             Job job = claim("worker");
             assertThat(job.body().at("/position/sideToMove").asText()).isEqualTo("BLACK");
             assertThat(result("worker", job, "e7e5").status()).isEqualTo(200);
         } else {
-            assertThatThrownBy(() -> actions.move(game.id(), human.id(), 0, "e2e4"))
+            assertThatThrownBy(() -> actions.move(humanAction(game, human, 0), "e2e4"))
                     .isInstanceOf(Match.NotYourTurnException.class);
             Job job = claim("worker");
             assertThat(job.body().at("/position/sideToMove").asText()).isEqualTo("WHITE");
             assertThat(result("worker", job, "e2e4").status()).isEqualTo(200);
-            actions.move(game.id(), human.id(), 1, "e7e5");
+            actions.move(humanAction(game, human, 1), "e7e5");
         }
         assertThat(gameState(game.id(), "move_history")).isEqualTo("e2e4 e7e5");
         assertThat(openRevisions(game.id())).containsExactlyElementsOf(
@@ -340,9 +340,10 @@ class AiConcurrencyIntegrationTest {
         CreatedGame game = createGame(human, "HUMAN_VS_AI", "BLACK", "PUBLIC");
         Job job = claim("owner");
 
+        GameActionService.Request request = humanAction(game, human, 0);
         GameSnapshot committed = whileResultWaits(job, () -> abandon
-                ? actions.abandon(game.id(), human.id())
-                : actions.offerDraw(game.id(), human.id(), 0), "JOB_EXPIRED");
+                ? actions.abandon(request)
+                : actions.offerDraw(request), "JOB_EXPIRED");
 
         assertThat(gameState(game.id(), "revision")).isEqualTo("1");
         assertThat(gameState(game.id(), "move_history")).isNullOrEmpty();
@@ -493,7 +494,7 @@ class AiConcurrencyIntegrationTest {
     }
 
     @Test
-    void keepsTheCheckmateSnapshotWhenThePreviousAiPublicationArrivesLate() {
+    void deliversTheDelayedAiMoveBeforeCheckmateAndKeepsTheTerminalSnapshot() {
         Session spectator = createSession();
         CreatedGame game = createGame(spectator, "AI_VS_AI", null, "PUBLIC");
         String whiteWorker = "white-worker";
@@ -522,6 +523,17 @@ class AiConcurrencyIntegrationTest {
             Job black = claim(blackWorker);
             assertThat(black.revision()).isEqualTo(3);
             assertThat(result(blackWorker, black, "d8h4").status()).isEqualTo(200);
+            assertThat(gameState(game.id(), "revision")).isEqualTo("5");
+            assertThat(gameState(game.id(), "status")).isEqualTo("FINISHED");
+
+            releaseWhitePublication.complete(null);
+            assertThat(whiteResult.orTimeout(5, TimeUnit.SECONDS).join().revision()).isEqualTo(3);
+            JsonNode beforeCheckmate = readSocketMessage(messages);
+            assertThat(beforeCheckmate.path("type").asText()).isEqualTo("game.state");
+            assertThat(beforeCheckmate.has("requestId")).isFalse();
+            assertThat(beforeCheckmate.at("/snapshot/revision").asLong()).isEqualTo(3);
+            assertThat(beforeCheckmate.at("/snapshot/status").asText()).isEqualTo("ACTIVE");
+            assertThat(beforeCheckmate.at("/snapshot/position/lastMoveUci").asText()).isEqualTo("g2g4");
 
             JsonNode finished = readSocketMessage(messages);
             assertThat(finished.path("type").asText()).isEqualTo("game.state");
@@ -532,8 +544,6 @@ class AiConcurrencyIntegrationTest {
             assertThat(finished.at("/snapshot/result/outcome").asText()).isEqualTo("BLACK_WIN");
             assertThat(finished.at("/snapshot/result/reason").asText()).isEqualTo("CHECKMATE");
 
-            releaseWhitePublication.complete(null);
-            assertThat(whiteResult.orTimeout(5, TimeUnit.SECONDS).join().revision()).isEqualTo(3);
             JsonNode current = socketExchange(socket, messages, "game.subscribe", game.id());
             assertThat(current.path("snapshot")).isEqualTo(finished.path("snapshot"));
             assertThat(gameState(game.id(), "status")).isEqualTo("FINISHED");
@@ -700,6 +710,10 @@ class AiConcurrencyIntegrationTest {
         assertThat(response.status()).isEqualTo(201);
         return new Session(UUID.fromString(response.body().path("sessionId").asText()),
                 response.body().path("recoveryToken").asText());
+    }
+
+    private static GameActionService.Request humanAction(CreatedGame game, Session human, long revision) {
+        return new GameActionService.Request(game.id(), human.id(), "human-" + revision, null, revision);
     }
 
     private CreatedGame createGame(Session creator, String mode, String side, String visibility) {

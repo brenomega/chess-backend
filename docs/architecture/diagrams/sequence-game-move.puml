@@ -6,50 +6,50 @@ actor Jogador
 participant "Frontend" as FE
 participant "WebSocket Adapter" as WS
 participant "Game Application" as APP
-participant "Game Repository Port" as REPO
-participant "Persistence Adapter" as PERSIST
 participant "Game Aggregate" as GAME
 participant "Chess Engine" as CHESS
 database "PostgreSQL" as DB
 participant "Event Publisher Port" as EVENTS
 
 Jogador -> FE: seleciona movimento
-FE -> WS: game.move(gameId, uci, revision)
-WS -> APP: move(identity, gameId, uci, revision)
-APP -> REPO: load(gameId)
-REPO -> PERSIST: load(gameId)
-PERSIST -> DB: SELECT estado operacional
-DB --> PERSIST: estado persistido
-PERSIST --> REPO: Game reidratado
-REPO --> APP: Game
-APP -> GAME: move(identity, uci, revision)
-GAME -> GAME: autorizar participante / validar turno e revisão
+FE -> WS: game.move(gameId, requestId, uci, revision)
+WS -> APP: move(sessão, requisição, revisão recebida)
+APP -> DB: carregar partida com trava de linha
+APP -> GAME: conferir participante humano
+APP -> DB: buscar ação aceita por partida, sessão e requestId
 
-alt identidade, turno ou revisão inválidos
-  GAME --> APP: rejeição sem mutação
-  APP --> WS: erro tipado + snapshot/revisão corrente
-  WS --> FE: rejeição
-else validações preliminares aceitas
-  GAME -> CHESS: validar e aplicar movimento
-  alt movimento ilegal
-    CHESS --> GAME: rejeição de legalidade
-    GAME --> APP: rejeição sem mutação
-    APP --> WS: erro tipado + snapshot/revisão corrente
-    WS --> FE: rejeição
-  else movimento legal
-    CHESS --> GAME: nova posição / resultado
-    GAME -> GAME: atualizar histórico UCI, relógio, estado e revisão
-    GAME --> APP: estado + eventos de domínio
-    APP -> REPO: save(Game)
-    REPO -> PERSIST: save(Game)
-    PERSIST -> DB: UPDATE estado operacional
-    DB --> PERSIST: commit
-    PERSIST --> REPO: concluído
-    REPO --> APP: concluído
-    APP -> EVENTS: publicar snapshot/eventos após commit
-    EVENTS --> WS: snapshot/eventos
-    WS --> FE: estado autoritativo
-    FE --> Jogador: renderiza novo estado
+alt reenvio idêntico
+  APP -> WS: snapshot persistido atual
+  WS -> FE: game.state correlacionado
+else requestId usado por outra ação
+  APP -> WS: REQUEST_ID_CONFLICT
+  WS -> FE: game.error correlacionado
+else ação nova sem revisão
+  APP -> WS: VALIDATION_ERROR
+  WS -> FE: game.error correlacionado
+else primeiro envio
+  APP -> GAME: move(sessão, uci, revisão recebida)
+  GAME -> GAME: validar revisão, estado, relógio e turno
+  alt fim por tempo
+    GAME --> APP: partida encerrada e erro de negócio
+    APP -> DB: persistir TIMEOUT
+    DB --> APP: commit
+    APP -> EVENTS: publicar TIMEOUT após commit a todos os inscritos
+    APP --> WS: INVALID_GAME_STATE
+    WS --> FE: game.error correlacionado
+  else lance aceito
+    GAME -> CHESS: validar e aplicar movimento
+    GAME --> APP: estado atualizado
+    APP -> DB: gravar ação aceita e estado na mesma transação
+    DB --> APP: commit
+    APP -> EVENTS: publicar snapshot após commit
+    EVENTS -> WS: game.state para demais conexões inscritas
+    APP -> WS: snapshot
+    WS -> FE: game.state correlacionado
+  else lance rejeitado
+    GAME --> APP: erro de negócio
+    APP --> WS: erro tipado
+    WS --> FE: game.error correlacionado
   end
 end
 @enduml

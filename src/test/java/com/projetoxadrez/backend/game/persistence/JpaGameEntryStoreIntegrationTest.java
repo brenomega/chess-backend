@@ -229,7 +229,7 @@ class JpaGameEntryStoreIntegrationTest {
 
         @Bean
         GameStatePublisher gameStatePublisher() {
-            return snapshot -> {
+            return (snapshot, excludedConnectionId) -> {
             };
         }
     }

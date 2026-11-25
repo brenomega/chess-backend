@@ -5,9 +5,14 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.projetoxadrez.backend.game.application.GameSnapshot;
 import com.projetoxadrez.backend.game.domain.GameStatus;
 import java.io.IOException;
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.TextMessage;
@@ -17,6 +22,7 @@ import org.springframework.web.socket.WebSocketSession;
 public class GameSubscriptionRegistry {
 
     private final Map<String, Connection> connections = new ConcurrentHashMap<>();
+    private final Map<UUID, Deque<Publication>> pendingPublications = new HashMap<>();
     private final ObjectMapper objectMapper;
 
     public GameSubscriptionRegistry(ObjectMapper objectMapper) {
@@ -35,6 +41,9 @@ public class GameSubscriptionRegistry {
 
         try {
             GameSnapshot snapshot = authorizedSnapshot.get();
+            if (follows(initializing.active(), gameId)) {
+                awaitPublications(snapshot);
+            }
             synchronized (session) {
                 if (connections.get(sessionId) != initializing) {
                     return;
@@ -70,6 +79,7 @@ public class GameSubscriptionRegistry {
     }
 
     void sendState(WebSocketSession session, String requestId, GameSnapshot snapshot) throws IOException {
+        awaitPublications(snapshot);
         synchronized (session) {
             Subscription active = activeSubscription(session);
             if (follows(active, snapshot.gameId())) {
@@ -83,6 +93,62 @@ public class GameSubscriptionRegistry {
     private Subscription activeSubscription(WebSocketSession session) {
         Connection connection = connections.get(session.getId());
         return connection == null ? null : connection.active();
+    }
+
+    Consumer<Boolean> queuePublication(GameSnapshot snapshot, String excludedConnectionId) {
+        UUID gameId = snapshot.gameId();
+        var publication = new Publication(snapshot.revision(), new CompletableFuture<>());
+        CompletableFuture<Void> predecessor;
+        synchronized (pendingPublications) {
+            Deque<Publication> queue = pendingPublications.computeIfAbsent(gameId, id -> new ArrayDeque<>());
+            Publication last = queue.peekLast();
+            predecessor = last == null ? CompletableFuture.completedFuture(null) : last.delivered();
+            queue.addLast(publication);
+        }
+
+        var committed = new CompletableFuture<Boolean>();
+        var delivery = predecessor.thenCombine(committed, (ignored, success) -> success)
+                .thenAccept(success -> {
+                    if (success) {
+                        if (excludedConnectionId == null) {
+                            publish(snapshot);
+                        } else {
+                            publish(snapshot, excludedConnectionId);
+                        }
+                    }
+                })
+                .whenComplete((ignored, failure) -> {
+                    synchronized (pendingPublications) {
+                        Deque<Publication> queue = pendingPublications.get(gameId);
+                        queue.removeFirst();
+                        if (queue.isEmpty()) {
+                            pendingPublications.remove(gameId);
+                        }
+                    }
+                    publication.delivered().complete(null);
+                });
+        return success -> {
+            if (committed.complete(success) && delivery.isCompletedExceptionally()) {
+                delivery.join();
+            }
+        };
+    }
+
+    private void awaitPublications(GameSnapshot snapshot) {
+        CompletableFuture<Void> delivered = CompletableFuture.completedFuture(null);
+        synchronized (pendingPublications) {
+            Deque<Publication> queue = pendingPublications.get(snapshot.gameId());
+            if (queue != null) {
+                for (var iterator = queue.descendingIterator(); iterator.hasNext();) {
+                    Publication publication = iterator.next();
+                    if (publication.revision() <= snapshot.revision()) {
+                        delivered = publication.delivered();
+                        break;
+                    }
+                }
+            }
+        }
+        delivered.join();
     }
 
     private void sendSubscribedState(
@@ -131,7 +197,12 @@ public class GameSubscriptionRegistry {
     }
 
     public void publish(GameSnapshot snapshot) {
+        publish(snapshot, null);
+    }
+
+    void publish(GameSnapshot snapshot, String excludedConnectionId) {
         connections.values().stream()
+                .filter(connection -> !connection.session().getId().equals(excludedConnectionId))
                 .filter(connection -> follows(connection.active(), snapshot.gameId())
                         || follows(connection.pending(), snapshot.gameId()))
                 .forEach(connection -> publish(connection.session(), snapshot));
@@ -172,6 +243,9 @@ public class GameSubscriptionRegistry {
     }
 
     private record Connection(WebSocketSession session, Subscription active, Subscription pending) {
+    }
+
+    private record Publication(long revision, CompletableFuture<Void> delivered) {
     }
 
     private static final class Subscription {

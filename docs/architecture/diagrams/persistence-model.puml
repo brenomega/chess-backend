@@ -52,6 +52,14 @@ entity game_move {
   played_at : timestamptz
 }
 
+entity game_action_receipt {
+  * game_id : uuid <<PK, FK>>
+  * session_id : uuid <<PK, FK>>
+  * request_id : varchar <<PK>>
+  --
+  action_identity : text
+}
+
 entity ai_job {
   * id : uuid <<PK>>
   --
@@ -73,6 +81,8 @@ entity ai_job {
 guest_session |o--o{ game_participant : participa
 game ||--|{ game_participant : possui dois lados
 game ||--o{ game_move : mantém sequência UCI
+game ||--o{ game_action_receipt : registra ação aceita
+guest_session ||--o{ game_action_receipt : identifica emissor
 game ||--o{ ai_job : solicita candidato
 
 note right of game

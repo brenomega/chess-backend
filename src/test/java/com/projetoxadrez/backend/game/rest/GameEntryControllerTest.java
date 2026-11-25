@@ -57,7 +57,7 @@ class GameEntryControllerTest {
         mockMvc = MockMvcBuilders.standaloneSetup(new GameEntryController(
                         new GameEntryService(
                                 store,
-                                publishedSnapshots::add,
+                                (snapshot, excludedConnectionId) -> publishedSnapshots.add(snapshot),
                                 Clock.fixed(NOW, ZoneOffset.UTC)),
                         sessionService))
                 .setControllerAdvice(
