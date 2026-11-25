@@ -13,6 +13,8 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class AiJobService {
 
+    private static final int MAX_WORKER_ID_LENGTH = 64;
+
     private final AiJobStore jobStore;
     private final GameActionService actionService;
     private final AiTurnScheduler aiTurnScheduler;
@@ -79,7 +81,8 @@ public class AiJobService {
     }
 
     private static void requireWorkerId(String workerId) {
-        if (workerId == null || workerId.isBlank()) {
+        if (workerId == null || workerId.isBlank()
+                || workerId.codePointCount(0, workerId.length()) > MAX_WORKER_ID_LENGTH) {
             throw new InvalidResultException();
         }
     }

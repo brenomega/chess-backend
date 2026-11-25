@@ -7,19 +7,15 @@ import java.util.Map;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
-/**
- * Traduz as recusas do fluxo da IA para os códigos de docs/contracts/backend-ai.md (EAP 2.14.4).
- *
- * <p>Nenhuma delas altera a partida: o worker erra, atrasa ou some, e o estado continua de pé.
- */
 @Order(0)
 @RestControllerAdvice(assignableTypes = AiJobController.class)
 public class AiJobExceptionHandler {
 
-    @ExceptionHandler(AiJobService.InvalidResultException.class)
+    @ExceptionHandler({AiJobService.InvalidResultException.class, HttpMessageNotReadableException.class})
     public ResponseEntity<GameErrorResponse> invalidRequest() {
         return response(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "Invalid AI job request");
     }

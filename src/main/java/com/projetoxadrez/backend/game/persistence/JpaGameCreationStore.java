@@ -28,6 +28,6 @@ public class JpaGameCreationStore implements GameCreationStore {
     @Override
     public GameSnapshot create(Game game, Instant createdAt) {
         GameEntity entity = repository.saveAndFlush(GameEntity.create(game, createdAt));
-        return snapshotFactory.snapshot(entity);
+        return snapshotFactory.persistedSnapshot(entity);
     }
 }

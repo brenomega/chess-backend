@@ -49,6 +49,8 @@ O Backend verifica a titularidade do trabalho antes de tratar reenvios. Para um 
 
 O corpo é `{"code":"...","message":"...","details":{}}`.
 
+`/next` e `/result` exigem um corpo JSON e um `workerId` de até 64 caracteres com pelo menos um caractere que não seja espaço em branco. Um corpo ausente ou ilegível, um UUID malformado, um campo obrigatório ausente ou um `workerId` inválido retorna `400 VALIDATION_ERROR`.
+
 | Status | Códigos essenciais |
 | --- | --- |
 | `400` | `VALIDATION_ERROR`, `INVALID_CANDIDATE` |
