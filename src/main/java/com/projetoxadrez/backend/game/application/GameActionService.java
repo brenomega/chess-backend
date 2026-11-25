@@ -103,7 +103,8 @@ public class GameActionService {
         }
         store.recordAction(gameId, sessionId, request.requestId(), identity);
         return match.revision() == previousRevision
-                ? store.snapshot(gameId)
+                ? store.snapshot(gameId).withClock(
+                        new GameSnapshot.Clock(match.whiteRemainingMs(), match.blackRemainingMs(), match.activeSide()))
                 : saveAndPublish(match, request.connectionId());
     }
 

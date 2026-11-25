@@ -14,7 +14,10 @@ import com.projetoxadrez.backend.game.application.GameQueryService;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.WebSocket;
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -26,6 +29,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.SpringApplication;
 import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.context.support.GenericApplicationContext;
 import org.springframework.core.Ordered;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -171,14 +175,18 @@ class ActionConsistencyIntegrationTest {
 
     @Test
     void bindsDrawActionsToTheirOfferAndPreservesReceiptsAcrossBackendRestart() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-11-24T15:00:00Z"), ZoneOffset.UTC);
+        long initialTimeMs = 600_000;
+        long elapsedMs = Duration.ofMinutes(1).toMillis();
         String white;
         String black;
         UUID gameId;
         ObjectNode decline;
-        try (Backend backend = startBackend()) {
+        ObjectNode secondOffer;
+        try (Backend backend = startBackend(clock)) {
             white = backend.createSession();
             black = backend.createSession();
-            gameId = backend.startGame(white, black);
+            gameId = backend.startGame(white, black, initialTimeMs);
             try (Socket proposer = backend.connect(white); Socket responder = backend.connect(black)) {
                 proposer.subscribe(gameId);
                 ObjectNode firstOffer = command("draw.offer", "do-2", gameId).put("revision", 1);
@@ -188,9 +196,15 @@ class ActionConsistencyIntegrationTest {
                 assertError(responder.exchange(decline), "VALIDATION_ERROR");
 
                 responder.subscribe(gameId);
+                assertThat(backend.jdbc().update("""
+                        UPDATE chess.game SET clock_updated_at = clock_updated_at - INTERVAL '1 minute' WHERE id = ?
+                        """, gameId)).isOne();
                 Map<String, Object> offered = backend.game(gameId);
-                assertThat(proposer.exchange(command("draw.offer", "do-repeat", gameId).put("revision", 2))
-                        .at("/snapshot/revision").asLong()).isEqualTo(2);
+                JsonNode repeatedOffer = proposer.exchange(command("draw.offer", "do-repeat", gameId).put("revision", 2));
+                assertThat(repeatedOffer.at("/snapshot/revision").asLong()).isEqualTo(2);
+                assertThat(repeatedOffer.at("/snapshot/clock/whiteRemainingMs").asLong())
+                        .isEqualTo(initialTimeMs - elapsedMs);
+                assertThat(repeatedOffer.at("/snapshot/clock/blackRemainingMs").asLong()).isEqualTo(initialTimeMs);
                 assertThat(backend.game(gameId)).isEqualTo(offered);
                 responder.subscribe(gameId);
 
@@ -203,8 +217,8 @@ class ActionConsistencyIntegrationTest {
 
                 ObjectNode delayedAccept = command("draw.respond", "late-accept", gameId).put("accept", true);
                 assertError(responder.exchange(delayedAccept), "VALIDATION_ERROR");
-                assertThat(proposer.exchange(command("draw.offer", "do-4", gameId).put("revision", 3))
-                        .at("/snapshot/revision").asLong()).isEqualTo(4);
+                secondOffer = command("draw.offer", "do-4", gameId).put("revision", 3);
+                assertThat(proposer.exchange(secondOffer).at("/snapshot/revision").asLong()).isEqualTo(4);
                 assertPublication(responder.receive(), 4, null);
                 assertError(responder.exchange(delayedAccept), "VALIDATION_ERROR");
                 assertError(responder.exchange(delayedAccept.deepCopy().put("revision", 2)), "STALE_REVISION");
@@ -220,10 +234,17 @@ class ActionConsistencyIntegrationTest {
             }
         }
 
-        try (Backend restarted = startBackend(); Socket responder = restarted.connect(black)) {
+        try (Backend restarted = startBackend(clock); Socket proposer = restarted.connect(white);
+                Socket responder = restarted.connect(black)) {
+            Map<String, Object> beforeReplay = restarted.game(gameId);
             JsonNode replay = responder.exchange(decline);
             assertThat(replay.at("/snapshot/revision").asLong()).isEqualTo(4);
             assertThat(replay.at("/snapshot/drawOffer/offeredBy").asText()).isEqualTo("WHITE");
+            responder.subscribe(gameId);
+            assertThat(proposer.exchange(secondOffer).path("snapshot")).isEqualTo(replay.path("snapshot"));
+            assertThat(restarted.receipts(gameId)).isEqualTo(4);
+            assertThat(restarted.game(gameId)).isEqualTo(beforeReplay);
+            responder.subscribe(gameId);
             assertError(responder.exchange(decline.deepCopy().put("accept", true)), "REQUEST_ID_CONFLICT");
             assertError(responder.exchange(command("draw.respond", "stale-draw", gameId)
                     .put("revision", 3).put("accept", true)), "STALE_REVISION");
@@ -232,7 +253,6 @@ class ActionConsistencyIntegrationTest {
             assertThat(restarted.game(gameId)).containsEntry("status", "ACTIVE")
                     .containsEntry("revision", 4L).containsEntry("draw_offer_side", "WHITE");
 
-            responder.subscribe(gameId);
             ObjectNode abandon = command("game.abandon", "rs-6", gameId).put("revision", 4);
             JsonNode finished = responder.exchange(abandon);
             assertThat(finished.at("/snapshot/result/reason").asText()).isEqualTo("RESIGNATION");
@@ -268,7 +288,14 @@ class ActionConsistencyIntegrationTest {
     }
 
     private static Backend startBackend() {
-        return new Backend(SpringApplication.run(ChessBackendApplication.class,
+        return startBackend(Clock.systemUTC());
+    }
+
+    private static Backend startBackend(Clock clock) {
+        var application = new SpringApplication(ChessBackendApplication.class);
+        application.addInitializers(context -> ((GenericApplicationContext) context).registerBean(
+                "integrationClock", Clock.class, () -> clock, definition -> definition.setPrimary(true)));
+        return new Backend(application.run(
                 "--server.port=0",
                 "--spring.datasource.url=" + postgresql.getJdbcUrl(),
                 "--spring.datasource.username=" + postgresql.getUsername(),
@@ -291,11 +318,15 @@ class ActionConsistencyIntegrationTest {
         }
 
         UUID startGame(String white, String black) {
+            return startGame(white, black, 0);
+        }
+
+        UUID startGame(String white, String black, long initialTimeMs) {
             JsonNode game = rest.post().uri("/v1/games").header("X-Session-Token", white)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body("""
-                            {"visibility":"PUBLIC","timeControl":{"initialTimeMs":0,"incrementMs":0}}
-                            """).retrieve().body(JsonNode.class);
+                            {"visibility":"PUBLIC","timeControl":{"initialTimeMs":%d,"incrementMs":0}}
+                            """.formatted(initialTimeMs)).retrieve().body(JsonNode.class);
             UUID gameId = UUID.fromString(game.path("gameId").asText());
             rest.post().uri("/v1/games/{gameId}/join", gameId).header("X-Session-Token", black)
                     .retrieve().toBodilessEntity();
@@ -304,7 +335,8 @@ class ActionConsistencyIntegrationTest {
 
         Map<String, Object> game(UUID gameId) {
             return jdbc.queryForMap("""
-                    SELECT revision, status, move_history, draw_offer_side, result_outcome, result_reason, updated_at
+                    SELECT revision, status, move_history, draw_offer_side, result_outcome, result_reason,
+                        white_remaining_ms, black_remaining_ms, clock_updated_at, updated_at
                     FROM chess.game WHERE id = ?
                     """, gameId);
         }
