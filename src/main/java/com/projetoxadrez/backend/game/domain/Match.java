@@ -13,16 +13,6 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
-/**
- * Partida em andamento: posição, relógio, oferta de empate e resultado.
- *
- * <p>Enquanto {@link Game} cobre a criação e a entrada de jogadores, este agregado concentra as
- * ações executadas durante a partida (EAP 2.9), o relógio autoritativo (2.10), a revisão das ações
- * (2.11.1) e a autorização dos participantes (2.13.1).
- *
- * <p>Toda ação devolve um estado novo e incrementa a revisão. Ações recebidas com revisão
- * desatualizada são rejeitadas, de modo que uma repetição atrasada não altera a partida.
- */
 public final class Match {
 
     private static final TerminalStateService TERMINAL_STATE = new TerminalStateService();
@@ -165,12 +155,10 @@ public final class Match {
         return resultReason;
     }
 
-    /** Instante em que a partida terminou, ou nulo enquanto ela não terminou. */
     public Instant endedAt() {
         return endedAt;
     }
 
-    /** Instante da última ação recebida, para registrar a atualização da partida. */
     public Instant lastActionAt() {
         return lastActionAt;
     }
@@ -179,32 +167,21 @@ public final class Match {
         return participants;
     }
 
-    /** Lado do participante com essa sessão, se ele joga esta partida (EAP 2.13.1). */
     public Optional<Side> sideOf(UUID sessionId) {
+        if (sessionId == null) {
+            return Optional.empty();
+        }
         return participants.stream()
-                .filter(participant -> Objects.equals(participant.sessionId(), sessionId))
+                .filter(participant -> "HUMAN".equals(participant.kind()) && sessionId.equals(participant.sessionId()))
                 .map(Game.Participant::side)
                 .findFirst();
     }
 
-    /**
-     * Aplica um lance da sessão informada (EAP 2.9.1).
-     *
-     * <p>A ordem das verificações importa: autorização, estado, vez e revisão vêm antes das regras
-     * de xadrez, para que um lance rejeitado nunca altere a partida.
-     */
     public void applyMove(UUID sessionId, long expectedRevision, Move move, Instant now) {
         lastActionAt = now;
         applyMoveFrom(requireParticipant(sessionId), expectedRevision, move, now);
     }
 
-    /**
-     * Aplica o lance de um participante controlado por IA (EAP 2.14.3).
-     *
-     * <p>O lado vem explícito porque uma partida entre duas IAs tem dois participantes sem sessão,
-     * que a busca por sessão não distinguiria. Fora isso, o lance passa pelas mesmas verificações
-     * de um lance humano: a IA não tem licença para jogar fora da vez nem para lance ilegal.
-     */
     public void applyAiMove(Side side, long expectedRevision, Move move, Instant now) {
         lastActionAt = now;
         requireAiParticipant(side);
@@ -228,7 +205,6 @@ public final class Match {
         position = position.apply(move);
         history = history.append(move);
         lastMoveUci = move.toUci();
-        // Uma oferta de empate não sobrevive ao lance seguinte.
         drawOfferSide = null;
         addIncrement(side);
         activeSide = position.sideToMove();
@@ -238,28 +214,25 @@ public final class Match {
         TERMINAL_STATE.result(position).ifPresent(this::finishWith);
     }
 
-    /** Abandono voluntário: o oponente vence (EAP 2.9.2). */
     public void abandon(UUID sessionId, Instant now) {
         lastActionAt = now;
         Side side = requireParticipant(sessionId);
         requireActive(now);
         if (status != GameStatus.ACTIVE) {
-            return; // já encerrada pelo relógio
+            return;
         }
         finish(side.opposite() == Side.WHITE ? "WHITE_WIN" : "BLACK_WIN", "RESIGNATION", now);
     }
 
-    /** Oferta de empate ao oponente (EAP 2.9.3). */
     public void offerDraw(UUID sessionId, long expectedRevision, Instant now) {
         lastActionAt = now;
         Side side = requireParticipant(sessionId);
         requireActive(now);
         requireRevision(expectedRevision);
         if (drawOfferSide == side) {
-            return; // repetição da mesma oferta: nada muda
+            return;
         }
         if (drawOfferSide == side.opposite()) {
-            // O oponente já havia oferecido: oferecer de volta equivale a aceitar.
             acceptDraw(now);
             return;
         }
@@ -267,7 +240,6 @@ public final class Match {
         revision++;
     }
 
-    /** Resposta à oferta pendente (EAP 2.9.3). */
     public void respondDraw(UUID sessionId, long expectedRevision, boolean accept, Instant now) {
         lastActionAt = now;
         Side side = requireParticipant(sessionId);
@@ -284,10 +256,6 @@ public final class Match {
         revision++;
     }
 
-    /**
-     * Encerra a partida se o tempo do lado da vez acabou (EAP 2.10.2). Devolve true quando o
-     * relógio decidiu a partida nesta chamada.
-     */
     public boolean settleTimeout(Instant now) {
         lastActionAt = now;
         if (status != GameStatus.ACTIVE || timeControl.isInfinite() || activeSide == null) {
@@ -302,7 +270,6 @@ public final class Match {
         finish("DRAW", "DRAW_AGREED", now);
     }
 
-    /** Desconta do lado da vez o tempo decorrido desde a última atualização (EAP 2.10.1). */
     private void chargeElapsed(Instant now) {
         if (timeControl.isInfinite() || activeSide == null || clockUpdatedAt == null) {
             return;
@@ -345,10 +312,6 @@ public final class Match {
         finish(result.outcome(), result.reason(), clockUpdatedAt);
     }
 
-    /**
-     * Encerra a partida. O relógio para junto: sem lado da vez não há âncora de tempo, e a tabela
-     * exige que os dois sejam nulos ao mesmo tempo.
-     */
     private void finish(String outcome, String reason, Instant endInstant) {
         status = GameStatus.FINISHED;
         resultOutcome = outcome;
@@ -360,7 +323,6 @@ public final class Match {
         revision++;
     }
 
-    /** Lado controlado por IA cuja vez é agora, se houver (EAP 2.14.3). */
     public Optional<Side> aiSideToMove() {
         if (status != GameStatus.ACTIVE || activeSide == null) {
             return Optional.empty();
@@ -380,14 +342,9 @@ public final class Match {
     }
 
     private Side requireParticipant(UUID sessionId) {
-        return participants.stream()
-                .filter(participant -> Objects.equals(participant.sessionId(), sessionId))
-                .map(Game.Participant::side)
-                .findFirst()
-                .orElseThrow(NotAParticipantException::new);
+        return sideOf(sessionId).orElseThrow(NotAParticipantException::new);
     }
 
-    /** A partida precisa estar em andamento; o relógio pode encerrá-la aqui. */
     private void requireActive(Instant now) {
         if (status != GameStatus.ACTIVE) {
             throw new InvalidGameStateException();

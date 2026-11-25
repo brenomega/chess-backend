@@ -13,7 +13,6 @@ import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
-/** EAP 2.16.2: regras, transições, relógio e concorrência das ações da partida. */
 class MatchTest {
 
     private static final TimeControl TEN_MINUTES = new TimeControl(600_000, 0);
@@ -68,7 +67,6 @@ class MatchTest {
                 null);
     }
 
-    /** Humano de brancas contra IA de pretas. */
     private static Match againstAi() {
         return withParticipants(List.of(
                 new Game.Participant(Side.WHITE, WHITE_SESSION, "HUMAN"),
@@ -79,8 +77,6 @@ class MatchTest {
         return withParticipants(List.of(
                 new Game.Participant(Side.WHITE, null, "AI"), new Game.Participant(Side.BLACK, null, "AI")));
     }
-
-    // ---------- 2.9.1 lance ----------
 
     @Test
     void appliesLegalMoveAndAdvancesStateHistoryAndRevision() {
@@ -120,7 +116,6 @@ class MatchTest {
 
     @Test
     void finishesByCheckmateWhenTheMoveDeliversIt() {
-        // Mate do pastor: as brancas jogam Dxf7#.
         Match match = activeFrom(
                 "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
                 TEN_MINUTES,
@@ -134,8 +129,6 @@ class MatchTest {
         assertThat(match.resultReason()).isEqualTo("CHECKMATE");
         assertThat(match.activeSide()).isNull();
     }
-
-    // ---------- 2.11.1 revisão e idempotência ----------
 
     @Test
     void rejectsActionCarryingAnOutdatedRevision() {
@@ -151,8 +144,6 @@ class MatchTest {
         Match match = active(TEN_MINUTES);
         match.applyMove(WHITE_SESSION, 7, Move.fromUci("e2e4"), NOW);
 
-        // O reenvio chega com a revisão antiga. Como o lance já foi aplicado, a vez passou para as
-        // pretas e a repetição é recusada sem alterar a partida.
         assertThatThrownBy(() -> match.applyMove(WHITE_SESSION, 7, Move.fromUci("e2e4"), NOW))
                 .isInstanceOf(Match.NotYourTurnException.class);
         assertThat(match.history().uciMoves()).containsExactly("e2e4");
@@ -179,8 +170,6 @@ class MatchTest {
         assertThat(match.revision()).isEqualTo(8);
     }
 
-    // ---------- 2.13.1 autorização ----------
-
     @Test
     void rejectsActionsFromSessionsThatDoNotPlayTheGame() {
         Match match = active(TEN_MINUTES);
@@ -193,8 +182,6 @@ class MatchTest {
                 .isInstanceOf(Match.NotAParticipantException.class);
         assertThat(match.revision()).isEqualTo(7);
     }
-
-    // ---------- 2.9.2 abandono ----------
 
     @Test
     void abandonGivesTheWinToTheOpponent() {
@@ -216,8 +203,6 @@ class MatchTest {
         assertThatThrownBy(() -> match.applyMove(BLACK_SESSION, match.revision(), Move.fromUci("e7e5"), NOW))
                 .isInstanceOf(Match.InvalidGameStateException.class);
     }
-
-    // ---------- 2.9.3 empate ----------
 
     @Test
     void registersDrawOfferAndEndsTheGameWhenAccepted() {
@@ -264,12 +249,6 @@ class MatchTest {
         assertThat(match.drawOfferSide()).isNull();
     }
 
-    // ---------- invariante do relógio ----------
-
-    /**
-     * A tabela game exige que lado da vez e âncora do relógio sejam nulos juntos
-     * (game_clock_anchor_consistent), então toda forma de encerramento precisa zerar os dois.
-     */
     @Test
     void everyEndingStopsTheClockAnchorAndRecordsWhenItEnded() {
         Match active = active(TEN_MINUTES);
@@ -303,8 +282,6 @@ class MatchTest {
         assertThat(flagged.clockUpdatedAt()).isNull();
         assertThat(flagged.endedAt()).isEqualTo(NOW.plus(Duration.ofSeconds(5)));
     }
-
-    // ---------- 2.10 relógio ----------
 
     @Test
     void chargesElapsedTimeToTheSideOnTurn() {
@@ -353,8 +330,6 @@ class MatchTest {
         assertThat(match.status()).isEqualTo(GameStatus.ACTIVE);
     }
 
-    // ---------- 2.14.3 turnos controlados por IA ----------
-
     @Test
     void appliesAiMoveForTheSideTheAiControls() {
         Match match = againstAi();
@@ -377,16 +352,24 @@ class MatchTest {
     }
 
     @Test
+    void rejectsHumanActionsWithNoSessionInAnAiGame() {
+        Match match = aiVersusAi();
+
+        assertThatThrownBy(() -> match.applyMove(null, 7, Move.fromUci("e2e4"), NOW))
+                .isInstanceOf(Match.NotAParticipantException.class);
+        assertThat(match.history().uciMoves()).isEmpty();
+        assertThat(match.revision()).isEqualTo(7);
+    }
+
+    @Test
     void holdsTheAiToTheSameRulesAsAHuman() {
         Match match = againstAi();
 
-        // Fora da vez: as brancas ainda não jogaram.
         assertThatThrownBy(() -> match.applyAiMove(Side.BLACK, 7, Move.fromUci("e7e5"), NOW))
                 .isInstanceOf(Match.NotYourTurnException.class);
 
         match.applyMove(WHITE_SESSION, 7, Move.fromUci("e2e4"), NOW);
 
-        // Lance ilegal e revisão desatualizada são recusados como seriam de um humano.
         assertThatThrownBy(() -> match.applyAiMove(Side.BLACK, match.revision(), Move.fromUci("e7e4"), NOW))
                 .isInstanceOf(Match.IllegalMoveException.class);
         assertThatThrownBy(() -> match.applyAiMove(Side.BLACK, 7, Move.fromUci("e7e5"), NOW))

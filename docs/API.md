@@ -14,7 +14,7 @@ O cliente envia JSON em UTF-8. Identificadores são UUIDs, instantes usam ISO-86
 | `POST /v1/games/{gameId}/join` | token de sessão; corpo vazio para `PUBLIC` ou `{"entryCode":"G7K2XP"}` para `PRIVATE` | `200` com o snapshot da partida ativa |
 | `GET /v1/games/{gameId}` | token de participante ou de observador de `AI_VS_AI` | `200` com o snapshot da partida |
 
-No modo `HUMAN_VS_HUMAN`, a partida é criada em `WAITING` com a sessão criadora como `WHITE` e `HUMAN`. Partidas `PUBLIC` não têm `entryCode` e são listadas no lobby enquanto aguardam o segundo jogador. Partidas `PRIVATE` não aparecem no lobby e recebem um `entryCode` opaco de seis caracteres para compartilhamento externo. `POST /v1/games/join` localiza somente uma partida `PRIVATE` em `WAITING` pelo código, atribui `BLACK` ao segundo guest e devolve o snapshot com `gameId`. Código ausente retorna `ENTRY_CODE_REQUIRED`; código malformado, inexistente ou que não identifica mais uma partida privada em espera retorna `INVALID_ENTRY_CODE`, sem revelar outra partida. O fluxo público permanece em `POST /v1/games/{gameId}/join`, com corpo vazio. Essa rota por `gameId` também preserva o contrato anterior para partidas `PRIVATE`, exigindo o código correspondente. A recuperação de sessão preserva a identidade necessária para consultar e retomar as partidas das quais ela participa.
+Em `HUMAN_VS_HUMAN`, partidas `PUBLIC` não têm `entryCode` e são listadas no lobby enquanto aguardam o segundo jogador. Partidas `PRIVATE` não aparecem no lobby e recebem um `entryCode` opaco de seis caracteres para compartilhamento externo. `POST /v1/games/join` localiza somente uma partida `PRIVATE` em `WAITING` pelo código e devolve o snapshot com `gameId`. Código ausente retorna `ENTRY_CODE_REQUIRED`; código malformado, inexistente ou que não identifica mais uma partida privada em espera retorna `INVALID_ENTRY_CODE`, sem revelar outra partida. O fluxo público permanece em `POST /v1/games/{gameId}/join`, com corpo vazio. Essa rota por `gameId` também preserva o contrato anterior para partidas `PRIVATE`, exigindo o código correspondente. A recuperação de sessão preserva a identidade necessária para consultar e retomar as partidas das quais ela participa.
 
 `timeControl.initialTimeMs` aceita `180000`, `600000`, `3600000` ou `0`; `0` representa uma partida sem limite de tempo. `timeControl.incrementMs` deve ser `0`.
 
@@ -40,7 +40,7 @@ No modo `HUMAN_VS_HUMAN`, a partida é criada em `WAITING` com a sessão criador
 | `HUMAN_VS_AI` | criador no lado de `side`, IA no lado oposto | `ACTIVE`, relógio correndo |
 | `AI_VS_AI` | duas IAs | `ACTIVE`, relógio correndo |
 
-Partidas com IA não esperam ninguém, por isso já nascem `ACTIVE`. São sempre `PUBLIC` e sem `entryCode`: não há como entrar nelas, e `visibility` enviado é ignorado. Elas não aparecem no lobby, que lista apenas partidas em `WAITING`.
+Partidas com IA são sempre `PUBLIC` e sem `entryCode`. O campo `visibility` enviado é ignorado. Essas partidas não aceitam entrada de jogadores e ficam fora do lobby.
 
 `side` escolhe o lado do humano em `HUMAN_VS_AI` e vale `WHITE` quando ausente; nos outros modos é ignorado. As brancas sempre começam, então criar uma partida com `side` igual a `BLACK` faz a IA jogar primeiro.
 
