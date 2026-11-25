@@ -76,6 +76,7 @@
                 <configuration>
                     <excludes>
                         <exclude>**/AiConcurrencyIntegrationTest.java</exclude>
+                        <exclude>**/AtomicEntryIntegrationTest.java</exclude>
                     </excludes>
                 </configuration>
             </plugin>
@@ -93,6 +94,7 @@
                 <configuration>
                     <includes>
                         <include>**/AiConcurrencyIntegrationTest.java</include>
+                        <include>**/AtomicEntryIntegrationTest.java</include>
                     </includes>
                 </configuration>
             </plugin>

@@ -20,10 +20,6 @@ public interface GameRepository extends JpaRepository<GameEntity, UUID> {
     @EntityGraph(attributePaths = "participants")
     Optional<GameEntity> findWithParticipantsById(UUID id);
 
-    /**
-     * Carrega a partida com trava de escrita, para que duas ações concorrentes na mesma partida
-     * sejam serializadas em vez de competirem pela revisão (EAP 2.11).
-     */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select g from GameEntity g where g.id = :id")
     Optional<GameEntity> findByIdForUpdate(@Param("id") UUID id);
@@ -31,7 +27,12 @@ public interface GameRepository extends JpaRepository<GameEntity, UUID> {
     boolean existsByEntryCodeAndStatusAndVisibility(
             String entryCode, GameStatus status, GameVisibility visibility);
 
-    @EntityGraph(attributePaths = "participants")
-    Optional<GameEntity> findByEntryCodeAndStatusAndVisibility(
-            String entryCode, GameStatus status, GameVisibility visibility);
+    @Query("""
+            select g.id from GameEntity g
+            where g.entryCode = :entryCode and g.status = :status and g.visibility = :visibility
+            """)
+    Optional<UUID> findIdByEntryCodeAndStatusAndVisibility(
+            @Param("entryCode") String entryCode,
+            @Param("status") GameStatus status,
+            @Param("visibility") GameVisibility visibility);
 }

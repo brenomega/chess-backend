@@ -6,9 +6,9 @@ import java.util.UUID;
 
 public interface GameEntryStore {
 
-    Optional<Game> findById(UUID gameId);
+    Optional<Game> findByIdForUpdate(UUID gameId);
 
-    Optional<Game> findPrivateWaitingByEntryCode(String entryCode);
+    Optional<UUID> findPrivateWaitingIdByEntryCode(String entryCode);
 
     GameSnapshot save(Game game);
 }

@@ -2,6 +2,8 @@ package com.projetoxadrez.backend.game.application;
 
 import com.projetoxadrez.backend.game.domain.Game;
 import com.projetoxadrez.backend.game.domain.GameEntryCode;
+import com.projetoxadrez.backend.game.domain.GameStatus;
+import com.projetoxadrez.backend.game.domain.GameVisibility;
 import java.time.Clock;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -22,7 +24,7 @@ public class GameEntryService {
 
     @Transactional
     public GameSnapshot join(UUID gameId, UUID sessionId, String entryCode) {
-        Game game = store.findById(gameId).orElseThrow(GameNotFoundException::new);
+        Game game = store.findByIdForUpdate(gameId).orElseThrow(GameNotFoundException::new);
         return join(game, sessionId, entryCode);
     }
 
@@ -31,14 +33,19 @@ public class GameEntryService {
         if (entryCode == null || entryCode.isBlank()) {
             throw new EntryCodeRequiredException();
         }
+        GameEntryCode code;
         try {
-            new GameEntryCode(entryCode);
+            code = new GameEntryCode(entryCode);
         } catch (IllegalArgumentException exception) {
             throw new InvalidEntryCodeException();
         }
-        Game game = store.findPrivateWaitingByEntryCode(entryCode)
+        Game game = store.findPrivateWaitingIdByEntryCode(code.value())
+                .flatMap(store::findByIdForUpdate)
+                .filter(candidate -> candidate.visibility() == GameVisibility.PRIVATE
+                        && candidate.status() == GameStatus.WAITING
+                        && candidate.entryCode().filter(code::equals).isPresent())
                 .orElseThrow(InvalidEntryCodeException::new);
-        return join(game, sessionId, entryCode);
+        return join(game, sessionId, code.value());
     }
 
     private GameSnapshot join(Game game, UUID sessionId, String entryCode) {
