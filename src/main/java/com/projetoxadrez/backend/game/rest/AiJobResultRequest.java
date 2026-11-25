@@ -1,7 +1,6 @@
 package com.projetoxadrez.backend.game.rest;
 
-import java.util.UUID;
+import com.fasterxml.jackson.databind.JsonNode;
 
-/** Corpo de POST /v1/ai/jobs/result. */
-public record AiJobResultRequest(String workerId, UUID jobId, UUID gameId, Long revision, String uci) {
+public record AiJobResultRequest(JsonNode workerId, JsonNode jobId, JsonNode gameId, JsonNode revision, JsonNode uci) {
 }

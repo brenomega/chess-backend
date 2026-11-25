@@ -2,15 +2,16 @@ package com.projetoxadrez.backend.game;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
-import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.util.RawValue;
 import com.projetoxadrez.backend.game.application.AiJob;
 import com.projetoxadrez.backend.game.application.AiJobService;
 import com.projetoxadrez.backend.game.application.GameActionService;
@@ -23,9 +24,12 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.WebSocket;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
@@ -43,11 +47,14 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.core.Ordered;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -59,6 +66,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 class AiConcurrencyIntegrationTest {
 
     private static final Instant START = Instant.parse("2026-10-02T15:00:00Z");
+    private static final String BLANK_UCI = "   ";
+    private static final String WORKER_ID_WITH_OVERLONG_ONE = "\u00C0\u00B1" + "23";
 
     @Container
     static final PostgreSQLContainer<?> postgresql = new PostgreSQLContainer<>("postgres:17-alpine");
@@ -174,12 +183,29 @@ class AiConcurrencyIntegrationTest {
     @Test
     void rejectsInvalidClaimsAndLeavesTheJobAvailable() {
         CreatedGame game = createGame(createSession(), "AI_VS_AI", null, "PUBLIC");
+        UUID pendingJob = jdbc.queryForObject("SELECT id FROM chess.ai_job WHERE game_id = ?", UUID.class, game.id());
         String maxLengthWorkerId = "a".repeat(63) + "\uD83D\uDE80";
 
         assertValidationError(post("/v1/ai/jobs/next", null, null));
+        assertValidationError(post("/v1/ai/jobs/next", objectMapper.createObjectNode().put("workerId", 123), null));
+        ObjectNode unpairedHighSurrogate = objectMapper.createObjectNode()
+                .putRawValue("workerId", new RawValue("\"worker-\\uD800\""));
+        assertValidationError(post("/v1/ai/jobs/next", unpairedHighSurrogate, null));
         assertValidationError(next(maxLengthWorkerId + "a"));
+        assertValidationError(next("worker\0id"));
+        assertValidationError(next(" \u00A0\u0085"));
+        assertValidationError(postRawJson("/v1/ai/jobs/next", "{\"workerId\":\"owner\"} lixo", null));
+        assertValidationError(postMalformedUtf8("/v1/ai/jobs/next",
+                objectMapper.createObjectNode().put("workerId", WORKER_ID_WITH_OVERLONG_ONE)));
+        assertThat(jobState(pendingJob, "status")).isEqualTo("PENDING");
+        assertThat(jobState(pendingJob, "worker_id")).isNull();
+        assertThat(jobState(pendingJob, "expires_at")).isNull();
+        assertThat(gameState(game.id(), "revision")).isEqualTo("0");
+        assertThat(gameState(game.id(), "move_history")).isNullOrEmpty();
+        verify(subscriptions, never()).publish(any());
 
         Job claimed = claim(maxLengthWorkerId);
+        assertThat(claimed.id()).isEqualTo(pendingJob);
         assertThat(claimed.gameId()).isEqualTo(game.id());
         assertThat(jobState(claimed.id(), "worker_id")).isEqualTo(maxLengthWorkerId);
     }
@@ -187,7 +213,9 @@ class AiConcurrencyIntegrationTest {
     @Test
     void acceptsOnlyValidResultsAndSerializesAnIdenticalReplay() {
         CreatedGame game = createGame(createSession(), "AI_VS_AI", null, "PUBLIC");
-        Job job = claim("owner");
+        int numericWorkerId = 123;
+        String owner = Integer.toString(numericWorkerId);
+        Job job = claim(owner);
         assertThat(job.gameId()).isEqualTo(game.id());
         assertThat(job.revision()).isZero();
         assertThat(job.body().at("/position/sideToMove").asText()).isEqualTo("WHITE");
@@ -195,26 +223,41 @@ class AiConcurrencyIntegrationTest {
         assertThat(job.body().path("timeBudgetMs").asLong()).isPositive();
         assertThat(Instant.parse(job.body().path("expiresAt").asText())).isEqualTo(START.plusSeconds(15));
 
-        ObjectNode payload = resultPayload("owner", job, "e2e4");
+        ObjectNode payload = resultPayload(owner, job, "e2e4");
+        assertValidationError(postResult(payload.deepCopy().put("workerId", numericWorkerId)));
+        ObjectNode unpairedLowSurrogate = payload.deepCopy()
+                .putRawValue("workerId", new RawValue("\"worker-\\uDC00\""));
+        assertValidationError(postResult(unpairedLowSurrogate));
         assertValidationError(postResult(payload.deepCopy().put("jobId", "not-a-uuid")));
+        String encodedJob = Base64.getEncoder().encodeToString(uuidBytes(job.id()));
+        String encodedGame = Base64.getUrlEncoder().withoutPadding().encodeToString(uuidBytes(game.id()));
+        assertValidationError(postResult(payload.deepCopy().put("jobId", encodedJob)));
+        assertValidationError(postResult(payload.deepCopy().put("gameId", encodedGame)));
         ObjectNode missingRevision = payload.deepCopy();
         missingRevision.remove("revision");
         assertValidationError(postResult(missingRevision));
+        assertValidationError(postResult(payload.deepCopy().put("revision", 0.5)));
         assertError(result("stranger", job, "e2e4"), 409, "WORKER_OWNERSHIP_CONFLICT");
         assertError(postResult(payload.deepCopy().put("gameId", UUID.randomUUID().toString())), 400, "VALIDATION_ERROR");
         assertError(postResult(payload.deepCopy().put("revision", 1)), 409, "STALE_REVISION");
-        assertError(result("owner", job, "e2e5"), 422, "ILLEGAL_MOVE");
-        assertError(result("owner", job, "???"), 400, "INVALID_CANDIDATE");
+        assertError(result(owner, job, "e2e5"), 422, "ILLEGAL_MOVE");
+        assertError(result(owner, job, BLANK_UCI), 400, "INVALID_CANDIDATE");
+        assertValidationError(postRawJson("/v1/ai/jobs/result", payload + " {}", null));
+        assertValidationError(postMalformedUtf8("/v1/ai/jobs/result",
+                payload.deepCopy().put("workerId", WORKER_ID_WITH_OVERLONG_ONE)));
         assertThat(jobState(job.id(), "status")).isEqualTo("ASSIGNED");
+        assertThat(jobState(job.id(), "worker_id")).isEqualTo(owner);
+        assertThat(openRevisions(game.id())).containsExactly(0L);
         assertThat(gameState(game.id(), "revision")).isEqualTo("0");
-        verifyNoInteractions(subscriptions);
+        assertThat(gameState(game.id(), "move_history")).isNullOrEmpty();
+        verify(subscriptions, never()).publish(any());
 
         CompletableFuture<ApiResponse> replay = transaction.execute(status -> {
-            assertThat(aiJobs.result("owner", job.id(), game.id(), 0, "e2e4").revision()).isEqualTo(1);
+            assertThat(aiJobs.result(owner, job.id(), game.id(), 0, "e2e4").revision()).isEqualTo(1);
             int pid = backendPid();
             CompletableFuture<ApiResponse> pending = sendAsync("/v1/ai/jobs/result", payload);
             awaitBlockedBy(pid);
-            verifyNoInteractions(subscriptions);
+            verify(subscriptions, never()).publish(any());
             return pending;
         });
         ApiResponse applied = response(replay);
@@ -222,18 +265,19 @@ class AiConcurrencyIntegrationTest {
         assertThat(applied.body().path("status").asText()).isEqualTo("APPLIED");
         assertThat(applied.body().path("gameId").asText()).isEqualTo(game.id().toString());
         assertThat(applied.body().path("revision").asLong()).isEqualTo(1);
-        assertThat(result("owner", job, "e2e4")).isEqualTo(applied);
+        assertThat(result(owner, job, "e2e4")).isEqualTo(applied);
+        assertValidationError(postResult(payload.deepCopy().put("jobId", encodedJob)));
         assertError(result("stranger", job, "e2e4"), 409, "WORKER_OWNERSHIP_CONFLICT");
-        assertError(result("owner", job, "d2d4"), 409, "JOB_ALREADY_COMPLETED");
+        assertError(result(owner, job, "d2d4"), 409, "JOB_ALREADY_COMPLETED");
 
         assertThat(gameState(game.id(), "move_history")).isEqualTo("e2e4");
         assertThat(gameState(game.id(), "revision")).isEqualTo("1");
         assertThat(jobState(job.id(), "status")).isEqualTo("COMPLETED");
-        assertThat(jobState(job.id(), "worker_id")).isEqualTo("owner");
+        assertThat(jobState(job.id(), "worker_id")).isEqualTo(owner);
         assertThat(openRevisions(game.id())).containsExactly(1L);
         verify(subscriptions).publish(argThat(snapshot ->
                 snapshot.gameId().equals(game.id()) && snapshot.revision() == 1));
-        verifyNoMoreInteractions(subscriptions);
+        verify(subscriptions).publish(any());
 
         Job reply = claim("other-worker");
         assertThat(reply.body().at("/position/sideToMove").asText()).isEqualTo("BLACK");
@@ -268,7 +312,7 @@ class AiConcurrencyIntegrationTest {
         assertThat(jobState(job.id(), "worker_id")).isEqualTo("second");
         assertThat(openRevisions(game.id())).containsExactly(0L);
         assertThat(gameState(game.id(), "revision")).isEqualTo("0");
-        verifyNoInteractions(subscriptions);
+        verify(subscriptions, never()).publish(any());
         assertThat(result("second", job, "e2e4").status()).isEqualTo(200);
         assertThat(gameState(game.id(), "move_history")).isEqualTo("e2e4");
     }
@@ -312,7 +356,7 @@ class AiConcurrencyIntegrationTest {
             assertThat(openRevisions(game.id())).containsExactly(1L);
         }
         verify(subscriptions).publish(committed);
-        verifyNoMoreInteractions(subscriptions);
+        verify(subscriptions).publish(any());
     }
 
     @Test
@@ -328,22 +372,51 @@ class AiConcurrencyIntegrationTest {
         assertThat(jobState(job.id(), "status")).isEqualTo("ASSIGNED");
         assertThat(gameState(game.id(), "revision")).isEqualTo("0");
         assertThat(openRevisions(game.id())).containsExactly(0L);
-        verifyNoInteractions(subscriptions);
+        verify(subscriptions, never()).publish(any());
     }
 
-    @Test
-    void publishesAndQueuesThePersistedTurnWhenTheNextClockReachesZeroDuringTheResult() {
+    @ParameterizedTest
+    @ValueSource(longs = {1, 2})
+    void publishesThePersistedTurnWithoutReplacingALaterClockProjection(long blackRemainingMs) {
         Session spectator = createSession();
         CreatedGame game = createGame(spectator, "AI_VS_AI", null, "PUBLIC");
-        jdbc.update("UPDATE chess.game SET black_remaining_ms = 1 WHERE id = ?", game.id());
+        jdbc.update("UPDATE chess.game SET black_remaining_ms = ? WHERE id = ?", blackRemainingMs, game.id());
         Job job = claim("owner");
         BlockingQueue<String> messages = new LinkedBlockingQueue<>();
+        BlockingQueue<String> projectedMessages = new LinkedBlockingQueue<>();
         WebSocket socket = connect(spectator, messages);
+        WebSocket projectedSocket = connect(spectator, projectedMessages);
+        CompletableFuture<Void> moveCommitted = new CompletableFuture<>();
+        CompletableFuture<Void> releasePublication = new CompletableFuture<>();
         try {
             socketExchange(socket, messages, "game.subscribe", game.id());
             when(clock.instant()).thenReturn(START, START, START.plusMillis(1));
+            CompletableFuture<AiJobService.AiJobOutcome> result = CompletableFuture.supplyAsync(
+                    () -> transaction.execute(status -> {
+                        pausePublicationAfterCommit(moveCommitted, releasePublication);
+                        return aiJobs.result("owner", job.id(), game.id(), 0, "e2e4");
+                    }));
 
-            assertThat(result("owner", job, "e2e4").status()).isEqualTo(200);
+            moveCommitted.orTimeout(5, TimeUnit.SECONDS).join();
+            verify(subscriptions, never()).publish(any());
+            JsonNode projected = socketExchange(projectedSocket, projectedMessages, "game.subscribe", game.id())
+                    .path("snapshot");
+            assertThat(projected.path("revision").asLong()).isEqualTo(1);
+            assertThat(projected.at("/clock/blackRemainingMs").asLong()).isEqualTo(blackRemainingMs - 1);
+            if (blackRemainingMs == 1) {
+                assertThat(projected.path("status").asText()).isEqualTo("FINISHED");
+                assertThat(projected.at("/result/outcome").asText()).isEqualTo("WHITE_WIN");
+                assertThat(projected.at("/result/reason").asText()).isEqualTo("TIMEOUT");
+                assertThat(projected.at("/clock/activeSide").isNull()).isTrue();
+            } else {
+                assertThat(projected.path("status").asText()).isEqualTo("ACTIVE");
+                assertThat(projected.at("/clock/activeSide").asText()).isEqualTo("BLACK");
+            }
+
+            releasePublication.complete(null);
+            assertThat(result.orTimeout(5, TimeUnit.SECONDS).join().revision()).isEqualTo(1);
+            JsonNode current = socketExchange(projectedSocket, projectedMessages, "game.subscribe", game.id());
+            assertThat(current.path("snapshot")).isEqualTo(projected);
 
             JsonNode event = readSocketMessage(messages);
             JsonNode snapshot = event.path("snapshot");
@@ -353,11 +426,11 @@ class AiConcurrencyIntegrationTest {
             assertThat(snapshot.path("result").isNull()).isTrue();
             assertThat(snapshot.path("revision").asLong()).isEqualTo(1);
             assertThat(snapshot.at("/clock/activeSide").asText()).isEqualTo("BLACK");
-            assertThat(snapshot.at("/clock/blackRemainingMs").asLong()).isEqualTo(1);
+            assertThat(snapshot.at("/clock/blackRemainingMs").asLong()).isEqualTo(blackRemainingMs);
             assertThat(gameState(game.id(), "status")).isEqualTo("ACTIVE");
             assertThat(gameState(game.id(), "revision")).isEqualTo("1");
             assertThat(gameState(game.id(), "move_history")).isEqualTo("e2e4");
-            assertThat(gameState(game.id(), "black_remaining_ms")).isEqualTo("1");
+            assertThat(gameState(game.id(), "black_remaining_ms")).isEqualTo(Long.toString(blackRemainingMs));
             assertThat(jobState(job.id(), "status")).isEqualTo("COMPLETED");
 
             Job reply = claim("next-worker");
@@ -365,18 +438,130 @@ class AiConcurrencyIntegrationTest {
             assertThat(reply.revision()).isEqualTo(1);
             assertThat(reply.body().at("/position/sideToMove").asText()).isEqualTo("BLACK");
         } finally {
+            releasePublication.complete(null);
+            socket.abort();
+            projectedSocket.abort();
+        }
+    }
+
+    @Test
+    void includesCheckmateCommittedDuringTheFirstSubscriptionInItsCorrelatedResponse() {
+        Session spectator = createSession();
+        CreatedGame game = createGame(spectator, "AI_VS_AI", null, "PUBLIC");
+        String worker = "owner";
+        assertThat(result(worker, claim(worker), "f2f3").status()).isEqualTo(200);
+        assertThat(result(worker, claim(worker), "e7e5").status()).isEqualTo(200);
+        assertThat(result(worker, claim(worker), "g2g4").status()).isEqualTo(200);
+        Job matingTurn = claim(worker);
+
+        BlockingQueue<String> messages = new LinkedBlockingQueue<>();
+        WebSocket socket = connect(spectator, messages);
+        CompletableFuture<Void> activeSnapshotRead = new CompletableFuture<>();
+        CompletableFuture<Void> resumeSubscription = new CompletableFuture<>();
+        try {
+            when(clock.instant()).thenAnswer(invocation -> {
+                if (activeSnapshotRead.complete(null)) {
+                    resumeSubscription.orTimeout(15, TimeUnit.SECONDS).join();
+                }
+                return now.get();
+            });
+
+            sendSocketCommand(socket, "game.subscribe", game.id());
+            activeSnapshotRead.orTimeout(5, TimeUnit.SECONDS).join();
+            assertThat(gameState(game.id(), "status")).isEqualTo("ACTIVE");
+            assertThat(result(worker, matingTurn, "d8h4").status()).isEqualTo(200);
+            verify(subscriptions).publish(argThat(snapshot ->
+                    snapshot.gameId().equals(game.id()) && snapshot.revision() == 5));
+            assertThat(gameState(game.id(), "status")).isEqualTo("FINISHED");
+            assertThat(gameState(game.id(), "move_history")).isEqualTo("f2f3 e7e5 g2g4 d8h4");
+            assertThat(jobState(matingTurn.id(), "status")).isEqualTo("COMPLETED");
+            assertThat(openRevisions(game.id())).isEmpty();
+
+            resumeSubscription.complete(null);
+            JsonNode response = readSocketMessage(messages);
+            assertThat(response.path("type").asText()).isEqualTo("game.state");
+            assertThat(response.path("requestId").asText()).isEqualTo("game.subscribe");
+            assertThat(response.at("/snapshot/gameId").asText()).isEqualTo(game.id().toString());
+            assertThat(response.at("/snapshot/revision").asLong()).isEqualTo(5);
+            assertThat(response.at("/snapshot/status").asText()).isEqualTo("FINISHED");
+            assertThat(response.at("/snapshot/result/outcome").asText()).isEqualTo("BLACK_WIN");
+            assertThat(response.at("/snapshot/result/reason").asText()).isEqualTo("CHECKMATE");
+        } finally {
+            resumeSubscription.complete(null);
             socket.abort();
         }
     }
 
     @Test
-    void commitsClockTimeoutAndCancelsTheJobEvenWhenTheCandidateIsRejected() {
+    void keepsTheCheckmateSnapshotWhenThePreviousAiPublicationArrivesLate() {
+        Session spectator = createSession();
+        CreatedGame game = createGame(spectator, "AI_VS_AI", null, "PUBLIC");
+        String whiteWorker = "white-worker";
+        String blackWorker = "black-worker";
+        assertThat(result(whiteWorker, claim(whiteWorker), "f2f3").status()).isEqualTo(200);
+        assertThat(result(blackWorker, claim(blackWorker), "e7e5").status()).isEqualTo(200);
+        Job white = claim(whiteWorker);
+
+        BlockingQueue<String> messages = new LinkedBlockingQueue<>();
+        WebSocket socket = connect(spectator, messages);
+        CompletableFuture<Void> whiteCommitted = new CompletableFuture<>();
+        CompletableFuture<Void> releaseWhitePublication = new CompletableFuture<>();
+        try {
+            JsonNode initial = socketExchange(socket, messages, "game.subscribe", game.id());
+            assertThat(initial.at("/snapshot/revision").asLong()).isEqualTo(2);
+            CompletableFuture<AiJobService.AiJobOutcome> whiteResult = CompletableFuture.supplyAsync(
+                    () -> transaction.execute(status -> {
+                        pausePublicationAfterCommit(whiteCommitted, releaseWhitePublication);
+                        return aiJobs.result(whiteWorker, white.id(), game.id(), 2, "g2g4");
+                    }));
+
+            whiteCommitted.orTimeout(5, TimeUnit.SECONDS).join();
+            assertThat(gameState(game.id(), "revision")).isEqualTo("3");
+            assertThat(gameState(game.id(), "status")).isEqualTo("ACTIVE");
+            assertThat(jobState(white.id(), "status")).isEqualTo("COMPLETED");
+            Job black = claim(blackWorker);
+            assertThat(black.revision()).isEqualTo(3);
+            assertThat(result(blackWorker, black, "d8h4").status()).isEqualTo(200);
+
+            JsonNode finished = readSocketMessage(messages);
+            assertThat(finished.path("type").asText()).isEqualTo("game.state");
+            assertThat(finished.has("requestId")).isFalse();
+            assertThat(finished.at("/snapshot/gameId").asText()).isEqualTo(game.id().toString());
+            assertThat(finished.at("/snapshot/revision").asLong()).isEqualTo(5);
+            assertThat(finished.at("/snapshot/status").asText()).isEqualTo("FINISHED");
+            assertThat(finished.at("/snapshot/result/outcome").asText()).isEqualTo("BLACK_WIN");
+            assertThat(finished.at("/snapshot/result/reason").asText()).isEqualTo("CHECKMATE");
+
+            releaseWhitePublication.complete(null);
+            assertThat(whiteResult.orTimeout(5, TimeUnit.SECONDS).join().revision()).isEqualTo(3);
+            JsonNode current = socketExchange(socket, messages, "game.subscribe", game.id());
+            assertThat(current.path("snapshot")).isEqualTo(finished.path("snapshot"));
+            assertThat(gameState(game.id(), "status")).isEqualTo("FINISHED");
+            assertThat(gameState(game.id(), "revision")).isEqualTo("5");
+            assertThat(gameState(game.id(), "move_history")).isEqualTo("f2f3 e7e5 g2g4 d8h4");
+            assertThat(jobState(black.id(), "status")).isEqualTo("COMPLETED");
+            assertThat(openRevisions(game.id())).isEmpty();
+        } finally {
+            releaseWhitePublication.complete(null);
+            socket.abort();
+        }
+    }
+
+    @Test
+    void commitsClockTimeoutAndCancelsTheJobBeforeRejectingABlankCandidate() {
         CreatedGame game = createGame(createSession(), "AI_VS_AI", null, "PUBLIC");
         now.set(START.plusSeconds(599));
         Job job = claim("owner");
         now.set(START.plusSeconds(600));
 
-        assertError(result("owner", job, "e2e4"), 422, "INVALID_GAME_STATE");
+        ObjectNode missingUci = resultPayload("owner", job, "e2e4");
+        missingUci.remove("uci");
+        assertValidationError(postResult(missingUci));
+        assertValidationError(postResult(resultPayload("owner", job, "e2e4").put("uci", 1234)));
+        assertThat(gameState(game.id(), "status")).isEqualTo("ACTIVE");
+        assertThat(jobState(job.id(), "status")).isEqualTo("ASSIGNED");
+        verify(subscriptions, never()).publish(any());
+        assertError(result("owner", job, BLANK_UCI), 422, "INVALID_GAME_STATE");
 
         assertThat(gameState(game.id(), "status")).isEqualTo("FINISHED");
         assertThat(gameState(game.id(), "result_outcome")).isEqualTo("BLACK_WIN");
@@ -386,8 +571,25 @@ class AiConcurrencyIntegrationTest {
         assertThat(jobState(job.id(), "status")).isEqualTo("CANCELLED");
         assertThat(openRevisions(game.id())).isEmpty();
         verify(subscriptions).publish(argThat(snapshot ->
-                snapshot.gameId().equals(game.id()) && snapshot.result().reason().equals("TIMEOUT")));
-        verifyNoMoreInteractions(subscriptions);
+                snapshot.gameId().equals(game.id()) && snapshot.revision() == 1
+                        && snapshot.result() != null && snapshot.result().reason().equals("TIMEOUT")));
+        verify(subscriptions).publish(any());
+    }
+
+    private static void pausePublicationAfterCommit(
+            CompletableFuture<Void> committed, CompletableFuture<Void> releasePublication) {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public int getOrder() {
+                return Ordered.HIGHEST_PRECEDENCE;
+            }
+
+            @Override
+            public void afterCommit() {
+                committed.complete(null);
+                releasePublication.orTimeout(20, TimeUnit.SECONDS).join();
+            }
+        });
     }
 
     private <T> T whileResultWaits(Job job, Supplier<T> action, String expectedError) {
@@ -398,7 +600,7 @@ class AiConcurrencyIntegrationTest {
             result.set(sendAsync("/v1/ai/jobs/result", resultPayload("owner", job, "e2e4")));
             awaitBlockedBy(pid);
             T outcome = action.get();
-            verifyNoInteractions(subscriptions);
+            verify(subscriptions, never()).publish(any());
             return outcome;
         });
         assertError(response(result.get()), 409, expectedError);
@@ -468,12 +670,16 @@ class AiConcurrencyIntegrationTest {
     }
 
     private JsonNode socketExchange(WebSocket socket, BlockingQueue<String> messages, String type, UUID gameId) {
-        ObjectNode message = objectMapper.createObjectNode().put("type", type).put("requestId", type)
-                .put("gameId", gameId.toString()).put("uci", "e2e4").put("accept", true);
-        socket.sendText(message.toString(), true).orTimeout(5, TimeUnit.SECONDS).join();
+        sendSocketCommand(socket, type, gameId);
         JsonNode response = readSocketMessage(messages);
         assertThat(response.path("requestId").asText()).isEqualTo(type);
         return response;
+    }
+
+    private void sendSocketCommand(WebSocket socket, String type, UUID gameId) {
+        ObjectNode message = objectMapper.createObjectNode().put("type", type).put("requestId", type)
+                .put("gameId", gameId.toString()).put("uci", "e2e4").put("accept", true);
+        socket.sendText(message.toString(), true).orTimeout(5, TimeUnit.SECONDS).join();
     }
 
     private JsonNode readSocketMessage(BlockingQueue<String> messages) {
@@ -535,24 +741,39 @@ class AiConcurrencyIntegrationTest {
                 .put("gameId", job.gameId().toString()).put("revision", job.revision()).put("uci", uci);
     }
 
+    private static byte[] uuidBytes(UUID id) {
+        return ByteBuffer.allocate(16).putLong(id.getMostSignificantBits()).putLong(id.getLeastSignificantBits()).array();
+    }
+
     private ApiResponse get(String path, Session session) {
         return response(send(request(path, session.token()).GET().build()));
     }
 
     private ApiResponse post(String path, JsonNode body, String token) {
+        return postRawJson(path, body == null ? null : body.toString(), token);
+    }
+
+    private ApiResponse postRawJson(String path, String body, String token) {
         return response(send(postRequest(path, body, token)));
     }
 
-    private CompletableFuture<ApiResponse> sendAsync(String path, JsonNode body) {
-        return send(postRequest(path, body, null));
+    private ApiResponse postMalformedUtf8(String path, ObjectNode body) {
+        byte[] bytes = body.toString().getBytes(StandardCharsets.ISO_8859_1);
+        HttpRequest request = request(path, null).header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofByteArray(bytes)).build();
+        return response(send(request));
     }
 
-    private HttpRequest postRequest(String path, JsonNode body, String token) {
+    private CompletableFuture<ApiResponse> sendAsync(String path, JsonNode body) {
+        return send(postRequest(path, body.toString(), null));
+    }
+
+    private HttpRequest postRequest(String path, String body, String token) {
         HttpRequest.Builder builder = request(path, token);
         return body == null
                 ? builder.POST(HttpRequest.BodyPublishers.noBody()).build()
                 : builder.header("Content-Type", "application/json")
-                        .POST(HttpRequest.BodyPublishers.ofString(body.toString())).build();
+                        .POST(HttpRequest.BodyPublishers.ofString(body)).build();
     }
 
     private HttpRequest.Builder request(String path, String token) {

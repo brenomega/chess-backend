@@ -8,17 +8,9 @@ import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-/**
- * Ações executadas durante a partida: lance, abandono e empate (EAP 2.9).
- *
- * <p>Cada ação roda numa transação: a partida é carregada com trava, o agregado {@link Match}
- * decide, e o estado resultante é publicado aos participantes conectados. Quando a ação é
- * rejeitada, a transação não grava nada — a partida fica exatamente como estava.
- */
 @Service
 public class GameActionService {
 
-    /** Marca "não verificar revisão", para clientes que não a enviam. */
     public static final long ANY_REVISION = -1;
 
     private final GameActionStore store;
@@ -40,12 +32,7 @@ public class GameActionService {
     @Transactional(noRollbackFor = Match.GameTimedOutException.class)
     public GameSnapshot move(UUID gameId, UUID sessionId, long expectedRevision, String uci) {
         Match match = load(gameId);
-        Move move;
-        try {
-            move = Move.fromUci(uci);
-        } catch (IllegalArgumentException exception) {
-            throw new InvalidMoveFormatException();
-        }
+        Move move = parseMove(uci);
         return act(match, () -> match.applyMove(sessionId, expectedRevision, move, clock.instant()));
     }
 
@@ -67,24 +54,11 @@ public class GameActionService {
         return act(match, () -> match.respondDraw(sessionId, expectedRevision, accept, clock.instant()));
     }
 
-    /**
-     * Aplica o lance devolvido pelo worker de IA (EAP 2.14.3).
-     *
-     * <p>Ao contrário das ações humanas, não reenfileira o turno seguinte: quem fecha o trabalho e
-     * decide o próximo é {@code AiJobService}, para não cancelar o trabalho que está sendo
-     * concluído neste mesmo instante.
-     */
     @Transactional(noRollbackFor = Match.GameTimedOutException.class)
     public GameSnapshot applyAiMove(UUID gameId, Side side, long expectedRevision, String uci) {
         Match match = load(gameId);
-        Move move;
         try {
-            move = Move.fromUci(uci);
-        } catch (IllegalArgumentException exception) {
-            throw new InvalidMoveFormatException();
-        }
-        try {
-            match.applyAiMove(side, expectedRevision, move, clock.instant());
+            match.applyAiCandidate(side, expectedRevision, () -> parseMove(uci), clock.instant());
         } catch (Match.GameTimedOutException exception) {
             publish(match);
             throw exception;
@@ -92,10 +66,14 @@ public class GameActionService {
         return publish(match);
     }
 
-    /**
-     * Executa a ação e grava. Se o relógio encerrou a partida, o fim é gravado e publicado mesmo
-     * com a ação rejeitada: o timeout é um fato novo, não um efeito da ação (EAP 2.10.2).
-     */
+    private static Move parseMove(String uci) {
+        try {
+            return Move.fromUci(uci);
+        } catch (IllegalArgumentException exception) {
+            throw new InvalidMoveFormatException();
+        }
+    }
+
     private GameSnapshot act(Match match, Runnable action) {
         try {
             action.run();
@@ -106,7 +84,6 @@ public class GameActionService {
         return publishAndSyncAi(match);
     }
 
-    /** Grava, publica e acerta a fila da IA: a ação humana pode ter passado a vez para ela. */
     private GameSnapshot publishAndSyncAi(Match match) {
         GameSnapshot snapshot = publish(match);
         aiTurnScheduler.syncAiTurn(snapshot);
@@ -117,7 +94,6 @@ public class GameActionService {
         return store.findForUpdate(gameId).orElseThrow(GameNotFoundException::new);
     }
 
-    /** Grava o estado e publica o snapshot aos inscritos, depois do commit (EAP 2.8.3). */
     private GameSnapshot publish(Match match) {
         GameSnapshot snapshot = store.save(match);
         statePublisher.publishAfterCommit(snapshot);

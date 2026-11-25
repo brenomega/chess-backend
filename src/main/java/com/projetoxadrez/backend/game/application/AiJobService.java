@@ -1,11 +1,13 @@
 package com.projetoxadrez.backend.game.application;
 
 import com.projetoxadrez.backend.game.domain.Match;
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -14,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class AiJobService {
 
     private static final int MAX_WORKER_ID_LENGTH = 64;
+    private static final Pattern BLANK_WORKER_ID = Pattern.compile("[\\p{javaWhitespace}\\p{IsWhite_Space}]*");
 
     private final AiJobStore jobStore;
     private final GameActionService actionService;
@@ -44,7 +47,7 @@ public class AiJobService {
     @Transactional(noRollbackFor = Match.GameTimedOutException.class)
     public AiJobOutcome result(String workerId, UUID jobId, UUID gameId, long revision, String uci) {
         requireWorkerId(workerId);
-        if (jobId == null || gameId == null || uci == null || uci.isBlank()) {
+        if (jobId == null || gameId == null || uci == null) {
             throw new InvalidResultException();
         }
         AiJobState job = jobStore.findForResult(jobId).orElseThrow(JobNotFoundException::new);
@@ -81,8 +84,9 @@ public class AiJobService {
     }
 
     private static void requireWorkerId(String workerId) {
-        if (workerId == null || workerId.isBlank()
-                || workerId.codePointCount(0, workerId.length()) > MAX_WORKER_ID_LENGTH) {
+        if (workerId == null || BLANK_WORKER_ID.matcher(workerId).matches() || workerId.indexOf(0) >= 0
+                || workerId.codePointCount(0, workerId.length()) > MAX_WORKER_ID_LENGTH
+                || !StandardCharsets.UTF_8.newEncoder().canEncode(workerId)) {
             throw new InvalidResultException();
         }
     }

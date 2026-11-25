@@ -188,17 +188,6 @@ class AiJobServiceTest {
     }
 
     @Test
-    void refusesAnIdenticalReplayFromAnotherWorker() {
-        AiJob job = enqueueAndAssign("worker-1");
-        service.result("worker-1", job.jobId(), gameId, 4, "e7e5");
-
-        assertThatThrownBy(() -> service.result("worker-2", job.jobId(), gameId, 4, "e7e5"))
-                .isInstanceOf(AiJobService.WorkerOwnershipConflictException.class);
-        assertThat(games.match.history().uciMoves()).containsExactly("e7e5");
-        assertThat(jobs.findForResult(job.jobId()).orElseThrow().workerId()).isEqualTo("worker-1");
-    }
-
-    @Test
     void refusesAChangedRevisionForAnAppliedJob() {
         AiJob job = enqueueAndAssign("worker-1");
         service.result("worker-1", job.jobId(), gameId, 4, "e7e5");

@@ -2,7 +2,7 @@
 
 O worker consulta o Backend por HTTP/JSON e fornece apenas um movimento candidato. O Backend continua responsável por estado, relógio, revisão, legalidade e conclusão da partida.
 
-`jobId` e `gameId` são UUIDs, e a posição é FEN. `revision` é a revisão autoritativa da partida que originou o trabalho.
+`jobId` e `gameId` são UUIDs, e a posição é FEN. `revision` é a revisão autoritativa da partida que originou o trabalho e deve ser enviada como um número inteiro JSON de 64 bits com sinal.
 
 A versão inicial do contrato é `v1`, identificada no primeiro segmento do caminho após a raiz. Não há negociação por cabeçalho. Mudanças incompatíveis usam uma nova versão de caminho, e Backend e worker não devem fazer fallback automático entre versões. Requisições e respostas com corpo usam `Content-Type: application/json`.
 
@@ -49,7 +49,7 @@ O Backend verifica a titularidade do trabalho antes de tratar reenvios. Para um 
 
 O corpo é `{"code":"...","message":"...","details":{}}`.
 
-`/next` e `/result` exigem um corpo JSON e um `workerId` de até 64 caracteres com pelo menos um caractere que não seja espaço em branco. Um corpo ausente ou ilegível, um UUID malformado, um campo obrigatório ausente ou um `workerId` inválido retorna `400 VALIDATION_ERROR`.
+`/next` e `/result` exigem um corpo JSON e um `workerId` do tipo string com Unicode válido, até 64 pontos de código, sem U+0000 e com pelo menos um caractere que não seja espaço em branco. Um corpo ausente ou ilegível, um UUID malformado, um campo obrigatório ausente, uma revisão fora do formato ou um `workerId` inválido retorna `400 VALIDATION_ERROR`.
 
 | Status | Códigos essenciais |
 | --- | --- |
@@ -60,7 +60,7 @@ O corpo é `{"code":"...","message":"...","details":{}}`.
 
 `WORKER_OWNERSHIP_CONFLICT` indica que o `jobId` está atribuído a outro `workerId`. A entrega é rejeitada sem alterar o trabalho ou a partida. O worker rejeitado não repete essa entrega: descarta o trabalho local e volta a solicitar trabalho em `/v1/ai/jobs/next`. O worker proprietário ainda pode entregar o resultado enquanto o trabalho estiver válido.
 
-Trabalhos cancelados retornam `JOB_EXPIRED` ao proprietário. Se o candidato chega com a atribuição válida e o relógio da partida já se esgotou, o Backend persiste o fim por `TIMEOUT`, cancela o trabalho e responde `INVALID_GAME_STATE`.
+Trabalhos cancelados retornam `JOB_EXPIRED` ao proprietário. Com a atribuição e a revisão válidas, o Backend verifica o relógio antes de interpretar o UCI. Se o tempo já se esgotou, persiste o fim por `TIMEOUT`, cancela o trabalho e responde `422 INVALID_GAME_STATE`.
 
 ## Consistência da fila
 
