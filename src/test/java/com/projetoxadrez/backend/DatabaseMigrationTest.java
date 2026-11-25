@@ -2,10 +2,12 @@ package com.projetoxadrez.backend;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.SpringApplication;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.web.client.RestClient;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -17,10 +19,11 @@ class DatabaseMigrationTest {
     static final PostgreSQLContainer<?> postgresql = new PostgreSQLContainer<>("postgres:17-alpine");
 
     @Test
-    void appliesTheRequiredSchemaAndPrivateEntryCodeInvariant() {
+    void appliesMigrationsAndReportsDatabaseHealth() {
         try (ConfigurableApplicationContext context = SpringApplication.run(
                 ChessBackendApplication.class,
-                "--spring.main.web-application-type=none",
+                "--server.port=0",
+                "--management.endpoint.health.show-components=always",
                 "--spring.datasource.url=" + postgresql.getJdbcUrl(),
                 "--spring.datasource.username=" + postgresql.getUsername(),
                 "--spring.datasource.password=" + postgresql.getPassword())) {
@@ -43,6 +46,17 @@ class DatabaseMigrationTest {
                       AND pg_get_expr(i.indpred, i.indrelid) LIKE '%WAITING%'
                     """, Integer.class);
             assertThat(matchingIndexes).isOne();
+
+            int port = context.getEnvironment().getRequiredProperty("local.server.port", Integer.class);
+            JsonNode health = RestClient.create("http://127.0.0.1:" + port)
+                    .get()
+                    .uri("/actuator/health")
+                    .retrieve()
+                    .body(JsonNode.class);
+
+            assertThat(health).isNotNull();
+            assertThat(health.path("status").asText()).isEqualTo("UP");
+            assertThat(health.path("components").path("db").path("status").asText()).isEqualTo("UP");
         }
     }
 }
