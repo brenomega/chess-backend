@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -15,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class AiJobService {
 
     private static final int MAX_WORKER_ID_LENGTH = 64;
+    private static final Pattern BLANK_WORKER_ID = Pattern.compile("[\\p{javaWhitespace}\\p{IsWhite_Space}]*");
 
     private final AiJobStore jobStore;
     private final GameActionService actionService;
@@ -82,7 +84,7 @@ public class AiJobService {
     }
 
     private static void requireWorkerId(String workerId) {
-        if (workerId == null || workerId.isBlank() || workerId.indexOf(0) >= 0
+        if (workerId == null || BLANK_WORKER_ID.matcher(workerId).matches() || workerId.indexOf(0) >= 0
                 || workerId.codePointCount(0, workerId.length()) > MAX_WORKER_ID_LENGTH
                 || !StandardCharsets.UTF_8.newEncoder().canEncode(workerId)) {
             throw new InvalidResultException();
