@@ -85,6 +85,13 @@ public class GameSubscriptionRegistry {
         return connection == null ? null : connection.active();
     }
 
+    Long observedRevision(WebSocketSession session, UUID gameId) {
+        synchronized (session) {
+            Subscription active = activeSubscription(session);
+            return follows(active, gameId) ? active.latest.revision() : null;
+        }
+    }
+
     private void sendSubscribedState(
             WebSocketSession session, String requestId, GameSnapshot snapshot, Subscription active) throws IOException {
         if (isOlderThan(snapshot, active.latest)) {
@@ -131,7 +138,12 @@ public class GameSubscriptionRegistry {
     }
 
     public void publish(GameSnapshot snapshot) {
+        publish(snapshot, null);
+    }
+
+    void publish(GameSnapshot snapshot, String excludedConnectionId) {
         connections.values().stream()
+                .filter(connection -> !connection.session().getId().equals(excludedConnectionId))
                 .filter(connection -> follows(connection.active(), snapshot.gameId())
                         || follows(connection.pending(), snapshot.gameId()))
                 .forEach(connection -> publish(connection.session(), snapshot));

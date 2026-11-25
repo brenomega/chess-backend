@@ -44,7 +44,7 @@ class AiJobServiceTest {
         games.match = afterWhiteOpening();
         Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
         scheduler = new AiJobTurnScheduler(jobs, clock, 1_000);
-        GameActionService actions = new GameActionService(games, snapshot -> {}, snapshot -> {}, clock);
+        GameActionService actions = new GameActionService(games, (snapshot, excluded) -> {}, snapshot -> {}, clock);
         service = new AiJobService(jobs, actions, scheduler, clock, LEASE_MS);
     }
 
@@ -216,7 +216,7 @@ class AiJobServiceTest {
     @Test
     void cancelsOpenJobsOnceTheGameIsOver() {
         AiJob job = enqueueAndAssign("worker-1");
-        games.match.abandon(HUMAN_SESSION, NOW);
+        games.match.abandon(HUMAN_SESSION, games.match.revision(), NOW);
 
         scheduler.syncAiTurn(games.snapshotOf(games.match));
 
@@ -241,7 +241,7 @@ class AiJobServiceTest {
         Clock clock = Clock.fixed(later, ZoneOffset.UTC);
         return new AiJobService(
                 jobs,
-                new GameActionService(games, snapshot -> {}, snapshot -> {}, clock),
+                new GameActionService(games, (snapshot, excluded) -> {}, snapshot -> {}, clock),
                 new AiJobTurnScheduler(jobs, clock, 1_000),
                 clock,
                 LEASE_MS);
@@ -260,6 +260,21 @@ class AiJobServiceTest {
         public GameSnapshot save(Match savedMatch) {
             match = savedMatch;
             return snapshotOf(savedMatch);
+        }
+
+        @Override
+        public GameSnapshot snapshot(UUID gameId) {
+            return snapshotOf(findForUpdate(gameId).orElseThrow());
+        }
+
+        @Override
+        public Optional<String> findActionIdentity(UUID gameId, UUID sessionId, String requestId) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void recordAction(UUID gameId, UUID sessionId, String requestId, String identity) {
+            throw new UnsupportedOperationException();
         }
 
         GameSnapshot snapshotOf(Match held) {

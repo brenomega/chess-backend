@@ -27,12 +27,15 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpHeaders;
@@ -167,8 +170,6 @@ class GameWebSocketHandlerTest {
         assertThat(store.snapshotQueries).isZero();
     }
 
-    // ---------- ações da partida (EAP 2.9, 2.15.1) ----------
-
     @Test
     void appliesMoveAndAnswersWithTheResultingState() throws Exception {
         actionStore.match = activeMatch();
@@ -218,6 +219,25 @@ class GameWebSocketHandlerTest {
         assertThat(actionStore.saves).isZero();
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"-1", "1.25", "\"1\"", "null", "9223372036854775808", "-1,\"revision\":1"})
+    void rejectsInvalidRevisionEvenWithAnObservedSnapshot(String revision) throws Exception {
+        actionStore.match = activeMatch();
+        store.snapshot = snapshotOf(actionStore.match);
+        handler.handleTextMessage(session, new TextMessage("""
+                {"type":"game.subscribe","requestId":"subscribe-1","gameId":"%s"}
+                """.formatted(gameId)));
+        session.messages.clear();
+
+        handler.handleTextMessage(session, new TextMessage("""
+                {"type":"game.move","requestId":"move-1","gameId":"%s","revision":%s,"uci":"e2e4"}
+                """.formatted(gameId, revision)));
+
+        assertThat(session.messages).singleElement().satisfies(message ->
+                assertThat(json(message).path("code").asText()).isEqualTo("VALIDATION_ERROR"));
+        assertThat(actionStore.saves).isZero();
+    }
+
     @Test
     void rejectsMoveOutsideUciNotation() throws Exception {
         actionStore.match = activeMatch();
@@ -237,7 +257,7 @@ class GameWebSocketHandlerTest {
         actionStore.match = activeMatch();
 
         handler.handleTextMessage(session, new TextMessage("""
-                {"type":"game.abandon","requestId":"abandon-1","gameId":"%s"}
+                {"type":"game.abandon","requestId":"abandon-1","gameId":"%s","revision":1}
                 """.formatted(gameId)));
 
         assertThat(session.messages).singleElement().satisfies(message -> {
@@ -259,7 +279,6 @@ class GameWebSocketHandlerTest {
         assertThat(json(session.messages.get(0)).at("/snapshot/drawOffer/offeredBy").asText())
                 .isEqualTo("WHITE");
 
-        // O oponente responde; o aceite vem da sessão das pretas.
         RecordingWebSocketSession blackSession = new RecordingWebSocketSession(opponentSessionId);
         handler.handleTextMessage(blackSession, new TextMessage("""
                 {"type":"draw.respond","requestId":"draw-2","gameId":"%s","accept":true,"revision":2}
@@ -340,7 +359,6 @@ class GameWebSocketHandlerTest {
                 null);
     }
 
-    /** Partida em andamento com a sessão do teste jogando de brancas. */
     private Match activeMatch() {
         ChessPosition initial = ChessPosition.initial();
         return Match.rehydrate(
@@ -383,9 +401,9 @@ class GameWebSocketHandlerTest {
                         : new GameSnapshot.Result(match.resultOutcome(), match.resultReason()));
     }
 
-    /** Guarda a partida em memória e devolve o snapshot do estado gravado. */
     private final class InMemoryActionStore implements GameActionStore {
 
+        private final Map<List<Object>, String> identities = new HashMap<>();
         private Match match;
         private int saves;
 
@@ -399,6 +417,21 @@ class GameWebSocketHandlerTest {
             saves++;
             match = savedMatch;
             return snapshotOf(savedMatch);
+        }
+
+        @Override
+        public GameSnapshot snapshot(UUID requestedGameId) {
+            return snapshotOf(findForUpdate(requestedGameId).orElseThrow());
+        }
+
+        @Override
+        public Optional<String> findActionIdentity(UUID gameId, UUID sessionId, String requestId) {
+            return Optional.ofNullable(identities.get(List.of(gameId, sessionId, requestId)));
+        }
+
+        @Override
+        public void recordAction(UUID gameId, UUID sessionId, String requestId, String identity) {
+            identities.put(List.of(gameId, sessionId, requestId), identity);
         }
     }
 

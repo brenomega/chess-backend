@@ -163,17 +163,17 @@ class AiConcurrencyIntegrationTest {
         CreatedGame game = createGame(human, "HUMAN_VS_AI", humanSide, "PUBLIC");
         if (humanSide.equals("WHITE")) {
             assertNoWork(next("worker"));
-            actions.move(game.id(), human.id(), 0, "e2e4");
+            actions.move(humanAction(game, human, 0), "e2e4");
             Job job = claim("worker");
             assertThat(job.body().at("/position/sideToMove").asText()).isEqualTo("BLACK");
             assertThat(result("worker", job, "e7e5").status()).isEqualTo(200);
         } else {
-            assertThatThrownBy(() -> actions.move(game.id(), human.id(), 0, "e2e4"))
+            assertThatThrownBy(() -> actions.move(humanAction(game, human, 0), "e2e4"))
                     .isInstanceOf(Match.NotYourTurnException.class);
             Job job = claim("worker");
             assertThat(job.body().at("/position/sideToMove").asText()).isEqualTo("WHITE");
             assertThat(result("worker", job, "e2e4").status()).isEqualTo(200);
-            actions.move(game.id(), human.id(), 1, "e7e5");
+            actions.move(humanAction(game, human, 1), "e7e5");
         }
         assertThat(gameState(game.id(), "move_history")).isEqualTo("e2e4 e7e5");
         assertThat(openRevisions(game.id())).containsExactlyElementsOf(
@@ -340,9 +340,10 @@ class AiConcurrencyIntegrationTest {
         CreatedGame game = createGame(human, "HUMAN_VS_AI", "BLACK", "PUBLIC");
         Job job = claim("owner");
 
+        GameActionService.Request request = humanAction(game, human, 0);
         GameSnapshot committed = whileResultWaits(job, () -> abandon
-                ? actions.abandon(game.id(), human.id())
-                : actions.offerDraw(game.id(), human.id(), 0), "JOB_EXPIRED");
+                ? actions.abandon(request)
+                : actions.offerDraw(request), "JOB_EXPIRED");
 
         assertThat(gameState(game.id(), "revision")).isEqualTo("1");
         assertThat(gameState(game.id(), "move_history")).isNullOrEmpty();
@@ -700,6 +701,10 @@ class AiConcurrencyIntegrationTest {
         assertThat(response.status()).isEqualTo(201);
         return new Session(UUID.fromString(response.body().path("sessionId").asText()),
                 response.body().path("recoveryToken").asText());
+    }
+
+    private static GameActionService.Request humanAction(CreatedGame game, Session human, long revision) {
+        return new GameActionService.Request(game.id(), human.id(), "human-" + revision, null, revision, null);
     }
 
     private CreatedGame createGame(Session creator, String mode, String side, String visibility) {

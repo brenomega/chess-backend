@@ -180,7 +180,11 @@ public final class Match {
 
     public void applyMove(UUID sessionId, long expectedRevision, Move move, Instant now) {
         lastActionAt = now;
-        applyMoveFrom(requireParticipant(sessionId), expectedRevision, () -> move, now);
+        Side side = requireParticipant(sessionId);
+        requireRevision(expectedRevision);
+        requireActive(now);
+        requireTurn(side);
+        applyMoveFrom(side, () -> move, now);
     }
 
     public void applyAiMove(Side side, long expectedRevision, Move move, Instant now) {
@@ -190,14 +194,13 @@ public final class Match {
     public void applyAiCandidate(Side side, long expectedRevision, Supplier<Move> candidate, Instant now) {
         lastActionAt = now;
         requireAiParticipant(side);
-        applyMoveFrom(side, expectedRevision, candidate, now);
-    }
-
-    private void applyMoveFrom(Side side, long expectedRevision, Supplier<Move> candidate, Instant now) {
         requireActive(now);
         requireTurn(side);
         requireRevision(expectedRevision);
+        applyMoveFrom(side, candidate, now);
+    }
 
+    private void applyMoveFrom(Side side, Supplier<Move> candidate, Instant now) {
         Move move = candidate.get();
         if (!position.legalMoves().contains(move)) {
             throw new IllegalMoveException();
@@ -220,9 +223,10 @@ public final class Match {
         TERMINAL_STATE.result(position).ifPresent(this::finishWith);
     }
 
-    public void abandon(UUID sessionId, Instant now) {
+    public void abandon(UUID sessionId, long expectedRevision, Instant now) {
         lastActionAt = now;
         Side side = requireParticipant(sessionId);
+        requireRevision(expectedRevision);
         requireActive(now);
         if (status != GameStatus.ACTIVE) {
             return;
@@ -233,8 +237,8 @@ public final class Match {
     public void offerDraw(UUID sessionId, long expectedRevision, Instant now) {
         lastActionAt = now;
         Side side = requireParticipant(sessionId);
-        requireActive(now);
         requireRevision(expectedRevision);
+        requireActive(now);
         if (drawOfferSide == side) {
             return;
         }
@@ -249,8 +253,8 @@ public final class Match {
     public void respondDraw(UUID sessionId, long expectedRevision, boolean accept, Instant now) {
         lastActionAt = now;
         Side side = requireParticipant(sessionId);
-        requireActive(now);
         requireRevision(expectedRevision);
+        requireActive(now);
         if (drawOfferSide == null || drawOfferSide == side) {
             throw new NoDrawOfferException();
         }
@@ -368,7 +372,7 @@ public final class Match {
     }
 
     private void requireRevision(long expectedRevision) {
-        if (expectedRevision >= 0 && expectedRevision != revision) {
+        if (expectedRevision != revision) {
             throw new StaleRevisionException();
         }
     }

@@ -16,14 +16,18 @@ public class AfterCommitGameStatePublisher implements GameStatePublisher {
     }
 
     @Override
-    public void publishAfterCommit(GameSnapshot snapshot) {
+    public void publishAfterCommit(GameSnapshot snapshot, String excludedConnectionId) {
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
             throw new IllegalStateException("Game state publication requires an active transaction");
         }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                subscriptions.publish(snapshot);
+                if (excludedConnectionId == null) {
+                    subscriptions.publish(snapshot);
+                } else {
+                    subscriptions.publish(snapshot, excludedConnectionId);
+                }
             }
         });
     }

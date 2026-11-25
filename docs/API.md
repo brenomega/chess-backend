@@ -98,7 +98,7 @@ O cliente conecta em `GET /ws` com `X-Session-Token`. O upgrade exige uma sessã
 | --- | --- | --- |
 | cliente -> servidor | `game.subscribe` | `gameId` |
 | cliente -> servidor | `game.move` | `gameId`, `uci`, `revision` opcional |
-| cliente -> servidor | `game.abandon` | `gameId` |
+| cliente -> servidor | `game.abandon` | `gameId`, `revision` opcional |
 | cliente -> servidor | `draw.offer` | `gameId`, `revision` opcional |
 | cliente -> servidor | `draw.respond` | `gameId`, `accept`, `revision` opcional |
 | servidor -> cliente | `game.state` | `requestId` opcional, `snapshot` |
@@ -130,7 +130,7 @@ Essas rejeições não alteram nem associam a partida.
 
 ### Ações da partida
 
-As quatro ações abaixo só valem com `status` igual a `ACTIVE` e só são aceitas dos participantes humanos da partida. Observadores de `AI_VS_AI` recebem `NOT_A_PARTICIPANT` para essas ações. Cada ação aceita responde com `game.state` correlacionado ao `requestId` e publica o mesmo `game.state`, sem `requestId`, para as outras conexões inscritas, sempre depois do commit da transação.
+Novas ações só são aceitas de participantes humanos de partidas em `ACTIVE`. Observadores de `AI_VS_AI` recebem `NOT_A_PARTICIPANT`. Uma ação aceita responde com `game.state` correlacionado ao `requestId`. Após o commit de uma transição, as demais conexões inscritas recebem uma publicação de `game.state` sem `requestId`, inclusive outras conexões da sessão do emissor.
 
 ```json
 {"type":"game.move","requestId":"m1","gameId":"d7fc48b7-570a-4d8d-a7ae-1bc5d20a9c13","uci":"e2e4","revision":12}
@@ -141,7 +141,9 @@ As quatro ações abaixo só valem com `status` igual a `ACTIVE` e só são acei
 
 `uci` usa notação UCI de quatro caracteres, com um quinto caractere (`q`, `r`, `b` ou `n`) na promoção.
 
-`revision` é a revisão que o cliente acredita ser a atual, lida do último `snapshot` recebido. Quando presente e diferente da revisão da partida, a ação é recusada com `STALE_REVISION` sem alterar a partida, o que impede a aplicação duplicada de um reenvio atrasado. Quando ausente, o servidor não confere a revisão.
+`revision` é a revisão do snapshot usado pelo cliente. Quando enviado, o campo deve ser um inteiro JSON de 64 bits não negativo. Se o campo for omitido, para compatibilidade com o cliente Godot, o servidor usa a revisão do último snapshot enviado naquela inscrição. Sem revisão explícita ou snapshot da inscrição nessa conexão, uma nova ação retorna `VALIDATION_ERROR`. A revisão é capturada antes de esperar a trava e comparada com a revisão persistida sob a trava. Uma divergência retorna `STALE_REVISION` sem alterar a partida. Envie explicitamente a revisão quando a ação se basear em um snapshot que pode ter sido substituído.
+
+Para ações, use um `requestId` com até 128 caracteres Unicode válidos, sem NUL, e reserve cada ID para uma ação por sessão e partida. Um reenvio com o mesmo tipo, revisão explícita ou omitida e dados da ação responde ao participante com o snapshot persistido atual, mesmo após outra transição ou reinício, sem reaplicar a ação ou republicar o estado. Reutilizar um ID aceito em outro comando válido retorna `REQUEST_ID_CONFLICT`.
 
 `game.abandon` encerra a partida com vitória do oponente por `RESIGNATION`. `draw.offer` registra a oferta; oferecer quando o oponente já ofereceu equivale a aceitar. `draw.respond` com `accept` verdadeiro encerra em `DRAW` por `DRAW_AGREED`, e com `accept` falso apenas retira a oferta. Uma oferta pendente é descartada no lance seguinte.
 
@@ -151,7 +153,7 @@ O relógio é autoritativo no servidor: o tempo decorrido desde a última atuali
 
 | Código | Quando ocorre |
 | --- | --- |
-| `VALIDATION_ERROR` | JSON inválido, campo obrigatório ausente, `gameId` fora do formato UUID ou `uci` fora da notação UCI |
+| `VALIDATION_ERROR` | JSON inválido, campo obrigatório ausente, `gameId` fora do formato UUID, `uci` fora da notação UCI ou revisão inválida ou indisponível |
 | `UNSUPPORTED_MESSAGE` | `type` não previsto neste contrato |
 | `SESSION_INVALID` | conexão sem sessão guest válida |
 | `GAME_NOT_FOUND` | partida inexistente |
@@ -159,6 +161,7 @@ O relógio é autoritativo no servidor: o tempo decorrido desde a última atuali
 | `INVALID_GAME_STATE` | partida não está `ACTIVE` |
 | `NOT_YOUR_TURN` | ação de lance fora da vez |
 | `STALE_REVISION` | `revision` diferente da revisão atual da partida |
+| `REQUEST_ID_CONFLICT` | ID já aceito para outra ação da mesma sessão na partida |
 | `ILLEGAL_MOVE` | lance ilegal na posição |
 | `NO_DRAW_OFFER` | `draw.respond` sem oferta pendente do oponente |
 

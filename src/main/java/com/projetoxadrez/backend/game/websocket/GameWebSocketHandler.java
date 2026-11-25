@@ -1,13 +1,16 @@
 package com.projetoxadrez.backend.game.websocket;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectReader;
 import com.projetoxadrez.backend.game.application.GameActionService;
 import com.projetoxadrez.backend.game.application.GameQueryService;
 import com.projetoxadrez.backend.game.application.GameSnapshot;
 import com.projetoxadrez.backend.game.domain.Match;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
@@ -21,7 +24,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
     private final GameQueryService queryService;
     private final GameActionService actionService;
     private final GameSubscriptionRegistry subscriptions;
-    private final ObjectMapper objectMapper;
+    private final ObjectReader messageReader;
 
     public GameWebSocketHandler(
             GameQueryService queryService,
@@ -31,14 +34,14 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         this.queryService = queryService;
         this.actionService = actionService;
         this.subscriptions = subscriptions;
-        this.objectMapper = objectMapper;
+        this.messageReader = objectMapper.reader().with(DeserializationFeature.FAIL_ON_READING_DUP_TREE_KEY);
     }
 
     @Override
     protected void handleTextMessage(WebSocketSession session, TextMessage textMessage) throws IOException {
         JsonNode message;
         try {
-            message = objectMapper.readTree(textMessage.getPayload());
+            message = messageReader.readTree(textMessage.getPayload());
         } catch (JsonProcessingException exception) {
             subscriptions.sendError(session, null, "VALIDATION_ERROR", "Message must be a valid JSON object");
             return;
@@ -60,26 +63,21 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         }
         switch (type) {
             case "game.subscribe" -> subscribe(session, requestId, message);
-            case "game.move" -> action(session, requestId, message, (gameId, sessionId) -> {
+            case "game.move" -> action(session, requestId, message, request -> {
                 String uci = text(message, "uci");
                 if (uci == null || uci.isBlank()) {
-                    throw new MissingFieldException("uci is required");
+                    throw new InvalidFieldException("uci is required");
                 }
-                return actionService.move(gameId, sessionId, revision(message), uci);
+                return actionService.move(request, uci);
             });
-            case "game.abandon" -> action(
-                    session, requestId, message, (gameId, sessionId) -> actionService.abandon(gameId, sessionId));
-            case "draw.offer" -> action(
-                    session,
-                    requestId,
-                    message,
-                    (gameId, sessionId) -> actionService.offerDraw(gameId, sessionId, revision(message)));
-            case "draw.respond" -> action(session, requestId, message, (gameId, sessionId) -> {
+            case "game.abandon" -> action(session, requestId, message, actionService::abandon);
+            case "draw.offer" -> action(session, requestId, message, actionService::offerDraw);
+            case "draw.respond" -> action(session, requestId, message, request -> {
                 JsonNode accept = message.get("accept");
                 if (accept == null || !accept.isBoolean()) {
-                    throw new MissingFieldException("accept must be a boolean");
+                    throw new InvalidFieldException("accept must be a boolean");
                 }
-                return actionService.respondDraw(gameId, sessionId, revision(message), accept.booleanValue());
+                return actionService.respondDraw(request, accept.booleanValue());
             });
             default -> subscriptions.sendError(
                     session, requestId, "UNSUPPORTED_MESSAGE", "Message type is not supported");
@@ -129,10 +127,21 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         }
 
         try {
-            GameSnapshot snapshot = gameAction.execute(gameId, sessionId);
+            if (requestId.codePointCount(0, requestId.length()) > 128 || requestId.indexOf(0) >= 0
+                    || !StandardCharsets.UTF_8.newEncoder().canEncode(requestId)) {
+                throw new InvalidFieldException("requestId must be valid Unicode, at most 128 characters and without NUL");
+            }
+            Long explicitRevision = revision(message);
+            Long observedRevision = explicitRevision == null ? subscriptions.observedRevision(session, gameId) : null;
+            GameSnapshot snapshot = gameAction.execute(new GameActionService.Request(
+                    gameId, sessionId, requestId, session.getId(), explicitRevision, observedRevision));
             subscriptions.sendState(session, requestId, snapshot);
-        } catch (MissingFieldException exception) {
+        } catch (InvalidFieldException exception) {
             subscriptions.sendError(session, requestId, "VALIDATION_ERROR", exception.getMessage());
+        } catch (GameActionService.MissingRevisionException exception) {
+            subscriptions.sendError(session, requestId, "VALIDATION_ERROR", "Provide revision or subscribe to the game");
+        } catch (GameActionService.RequestIdConflictException exception) {
+            subscriptions.sendError(session, requestId, "REQUEST_ID_CONFLICT", "requestId already used for another action");
         } catch (GameActionService.InvalidMoveFormatException exception) {
             subscriptions.sendError(session, requestId, "VALIDATION_ERROR", "uci must use UCI notation");
         } catch (GameActionService.GameNotFoundException exception) {
@@ -167,18 +176,24 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
-    private static long revision(JsonNode message) {
+    private static Long revision(JsonNode message) {
         JsonNode value = message.get("revision");
-        return value != null && value.canConvertToLong() ? value.longValue() : GameActionService.ANY_REVISION;
+        if (value == null) {
+            return null;
+        }
+        if (!value.isIntegralNumber() || !value.canConvertToLong() || value.longValue() < 0) {
+            throw new InvalidFieldException("revision must be a non-negative 64-bit integer");
+        }
+        return value.longValue();
     }
 
     @FunctionalInterface
     private interface GameAction {
-        GameSnapshot execute(UUID gameId, UUID sessionId);
+        GameSnapshot execute(GameActionService.Request request);
     }
 
-    private static final class MissingFieldException extends RuntimeException {
-        private MissingFieldException(String message) {
+    private static final class InvalidFieldException extends RuntimeException {
+        private InvalidFieldException(String message) {
             super(message);
         }
     }

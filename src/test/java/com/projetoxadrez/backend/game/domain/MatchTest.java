@@ -134,9 +134,10 @@ class MatchTest {
     void rejectsActionCarryingAnOutdatedRevision() {
         Match match = active(TEN_MINUTES);
 
-        assertThatThrownBy(() -> match.applyMove(WHITE_SESSION, 6, Move.fromUci("e2e4"), NOW))
+        assertThatThrownBy(() -> match.applyMove(WHITE_SESSION, 6, Move.fromUci("e2e4"), NOW.plusSeconds(600)))
                 .isInstanceOf(Match.StaleRevisionException.class);
         assertThat(match.revision()).isEqualTo(7);
+        assertThat(match.status()).isEqualTo(GameStatus.ACTIVE);
     }
 
     @Test
@@ -145,7 +146,7 @@ class MatchTest {
         match.applyMove(WHITE_SESSION, 7, Move.fromUci("e2e4"), NOW);
 
         assertThatThrownBy(() -> match.applyMove(WHITE_SESSION, 7, Move.fromUci("e2e4"), NOW))
-                .isInstanceOf(Match.NotYourTurnException.class);
+                .isInstanceOf(Match.StaleRevisionException.class);
         assertThat(match.history().uciMoves()).containsExactly("e2e4");
         assertThat(match.revision()).isEqualTo(8);
     }
@@ -162,12 +163,14 @@ class MatchTest {
     }
 
     @Test
-    void acceptsActionWithoutRevisionCheck() {
+    void rejectsANegativeRevisionWithoutApplyingTheMove() {
         Match match = active(TEN_MINUTES);
 
-        match.applyMove(WHITE_SESSION, -1, Move.fromUci("e2e4"), NOW);
+        assertThatThrownBy(() -> match.applyMove(WHITE_SESSION, -1, Move.fromUci("e2e4"), NOW))
+                .isInstanceOf(Match.StaleRevisionException.class);
 
-        assertThat(match.revision()).isEqualTo(8);
+        assertThat(match.history().uciMoves()).isEmpty();
+        assertThat(match.revision()).isEqualTo(7);
     }
 
     @Test
@@ -176,7 +179,7 @@ class MatchTest {
 
         assertThatThrownBy(() -> match.applyMove(STRANGER_SESSION, 7, Move.fromUci("e2e4"), NOW))
                 .isInstanceOf(Match.NotAParticipantException.class);
-        assertThatThrownBy(() -> match.abandon(STRANGER_SESSION, NOW))
+        assertThatThrownBy(() -> match.abandon(STRANGER_SESSION, 7, NOW))
                 .isInstanceOf(Match.NotAParticipantException.class);
         assertThatThrownBy(() -> match.offerDraw(STRANGER_SESSION, 7, NOW))
                 .isInstanceOf(Match.NotAParticipantException.class);
@@ -187,7 +190,7 @@ class MatchTest {
     void abandonGivesTheWinToTheOpponent() {
         Match match = active(TEN_MINUTES);
 
-        match.abandon(WHITE_SESSION, NOW);
+        match.abandon(WHITE_SESSION, 7, NOW);
 
         assertThat(match.status()).isEqualTo(GameStatus.FINISHED);
         assertThat(match.resultOutcome()).isEqualTo("BLACK_WIN");
@@ -198,7 +201,7 @@ class MatchTest {
     @Test
     void rejectsActionsOnAGameThatIsNotActive() {
         Match match = active(TEN_MINUTES);
-        match.abandon(WHITE_SESSION, NOW);
+        match.abandon(WHITE_SESSION, 7, NOW);
 
         assertThatThrownBy(() -> match.applyMove(BLACK_SESSION, match.revision(), Move.fromUci("e7e5"), NOW))
                 .isInstanceOf(Match.InvalidGameStateException.class);
@@ -257,7 +260,7 @@ class MatchTest {
         assertThat(active.endedAt()).isNull();
 
         Match resigned = active(TEN_MINUTES);
-        resigned.abandon(WHITE_SESSION, NOW);
+        resigned.abandon(WHITE_SESSION, 7, NOW);
         assertThat(resigned.activeSide()).isNull();
         assertThat(resigned.clockUpdatedAt()).isNull();
         assertThat(resigned.endedAt()).isEqualTo(NOW);
@@ -404,7 +407,7 @@ class MatchTest {
     @Test
     void stopsAskingTheAiOnceTheGameIsOver() {
         Match match = againstAi();
-        match.abandon(WHITE_SESSION, NOW);
+        match.abandon(WHITE_SESSION, 7, NOW);
 
         assertThat(match.aiSideToMove()).isEmpty();
         assertThatThrownBy(() -> match.applyAiMove(Side.BLACK, match.revision(), Move.fromUci("e7e5"), NOW))
