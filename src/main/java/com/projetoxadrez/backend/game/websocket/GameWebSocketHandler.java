@@ -54,12 +54,14 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
 
         String requestId = text(message, "requestId");
         String type = text(message, "type");
-        if (requestId == null || requestId.isBlank() || type == null || type.isBlank()) {
-            subscriptions.sendError(
-                    session,
-                    requestId == null || requestId.isBlank() ? null : requestId,
-                    "VALIDATION_ERROR",
-                    "type and requestId are required");
+        if (requestId == null || requestId.isBlank() || requestId.indexOf(0) >= 0
+                || !StandardCharsets.UTF_8.newEncoder().canEncode(requestId)) {
+            subscriptions.sendError(session, null, "VALIDATION_ERROR",
+                    "requestId must be a non-blank Unicode string without NUL");
+            return;
+        }
+        if (type == null || type.isBlank()) {
+            subscriptions.sendError(session, requestId, "VALIDATION_ERROR", "type is required");
             return;
         }
         switch (type) {
@@ -117,6 +119,10 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
 
     private void action(WebSocketSession session, String requestId, JsonNode message, GameAction gameAction)
             throws IOException {
+        if (requestId.codePointCount(0, requestId.length()) > 128) {
+            subscriptions.sendError(session, null, "VALIDATION_ERROR", "requestId must be at most 128 characters");
+            return;
+        }
         UUID gameId = gameId(session, requestId, message);
         if (gameId == null) {
             return;
@@ -128,10 +134,6 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         }
 
         try {
-            if (requestId.codePointCount(0, requestId.length()) > 128 || requestId.indexOf(0) >= 0
-                    || !StandardCharsets.UTF_8.newEncoder().canEncode(requestId)) {
-                throw new InvalidFieldException("requestId must be valid Unicode, at most 128 characters and without NUL");
-            }
             GameSnapshot snapshot = gameAction.execute(new GameActionService.Request(
                     gameId, sessionId, requestId, session.getId(), revision(message)));
             subscriptions.sendState(session, requestId, snapshot);

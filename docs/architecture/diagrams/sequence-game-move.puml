@@ -12,8 +12,8 @@ database "PostgreSQL" as DB
 participant "Event Publisher Port" as EVENTS
 
 Jogador -> FE: seleciona movimento
-FE -> WS: game.move(gameId, requestId, uci, revision?)
-WS -> APP: move(sessão, requisição, revisão da inscrição)
+FE -> WS: game.move(gameId, requestId, uci, revision)
+WS -> APP: move(sessão, requisição, revisão recebida)
 APP -> DB: carregar partida com trava de linha
 APP -> GAME: conferir participante humano
 APP -> DB: buscar ação aceita por partida, sessão e requestId
@@ -24,8 +24,11 @@ alt reenvio idêntico
 else requestId usado por outra ação
   APP -> WS: REQUEST_ID_CONFLICT
   WS -> FE: game.error correlacionado
+else ação nova sem revisão
+  APP -> WS: VALIDATION_ERROR
+  WS -> FE: game.error correlacionado
 else primeiro envio
-  APP -> GAME: move(sessão, uci, revisão explícita ou da inscrição)
+  APP -> GAME: move(sessão, uci, revisão recebida)
   GAME -> GAME: validar revisão, estado, relógio e turno
   alt fim por tempo
     GAME --> APP: partida encerrada e erro de negócio

@@ -32,9 +32,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -161,6 +163,25 @@ class GameWebSocketHandlerTest {
             assertThat(error.has("requestId")).isFalse();
         });
         assertThat(store.snapshotQueries).isZero();
+    }
+
+    @ParameterizedTest
+    @MethodSource("invalidActionIds")
+    void rejectsInvalidActionIdBeforeRoutingOrCorrelating(String requestId) throws Exception {
+        handler.handleTextMessage(session, new TextMessage("""
+                {"type":"draw.offer","requestId":%s,"gameId":"invalid","revision":1}
+                """.formatted(requestId)));
+
+        assertThat(session.messages).singleElement().satisfies(message -> {
+            JsonNode error = json(message);
+            assertThat(error.path("code").asText()).isEqualTo("VALIDATION_ERROR");
+            assertThat(error.path("message").asText()).startsWith("requestId");
+            assertThat(error.has("requestId")).isFalse();
+        });
+    }
+
+    private static Stream<String> invalidActionIds() {
+        return Stream.of("\"bad\\u0000id\"", "\"bad\\uD800id\"", "\"" + "x".repeat(129) + "\"");
     }
 
     @Test

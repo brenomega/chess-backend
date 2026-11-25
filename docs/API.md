@@ -92,7 +92,7 @@ O corpo de erro é `{"code":"...","message":"...","details":{...}}`. `code` e `m
 
 ## WebSocket
 
-O cliente conecta em `GET /ws` com `X-Session-Token`. O upgrade exige uma sessão guest válida; token ausente, inválido ou expirado rejeita o handshake com HTTP `401`. Após a conexão, cada mensagem é um objeto JSON com `type`, `requestId` e os campos do tipo. `requestId` é obrigatório nas mensagens do cliente e é reproduzido na resposta ou no erro correlato.
+O cliente conecta em `GET /ws` com `X-Session-Token`. O upgrade exige uma sessão guest válida; token ausente, inválido ou expirado rejeita o handshake com HTTP `401`. Após a conexão, cada mensagem é um objeto JSON com `type`, `requestId` e os campos do tipo. `requestId` é obrigatório nas mensagens do cliente e deve ser uma string Unicode válida, não vazia nem composta apenas por espaços em branco, sem NUL.
 
 | Direção | Tipo | Campos adicionais |
 | --- | --- | --- |
@@ -145,7 +145,7 @@ Novas ações só são aceitas de participantes humanos de partidas em `ACTIVE`.
 
 Para ações, use um `requestId` com até 128 caracteres Unicode válidos, sem NUL, e reserve cada ID para uma ação por sessão e partida. Um reenvio com o mesmo tipo, revisão e dados da ação responde ao participante com o snapshot persistido atual, mesmo após outra transição ou reinício, sem reaplicar a ação ou republicar o estado. A omissão de `revision` só é aceita no reenvio de uma ação que já tenha um recibo com a revisão omitida. Reutilizar um ID aceito em outro comando válido retorna `REQUEST_ID_CONFLICT`.
 
-`game.abandon` encerra a partida com vitória do oponente por `RESIGNATION`. `draw.offer` registra a oferta; oferecer quando o oponente já ofereceu equivale a aceitar. `draw.respond` com `accept` verdadeiro encerra em `DRAW` por `DRAW_AGREED`, e com `accept` falso apenas retira a oferta. Uma oferta pendente é descartada no lance seguinte.
+`game.abandon` encerra a partida com vitória do oponente por `RESIGNATION`. `draw.offer` registra a oferta; oferecer quando o oponente já ofereceu equivale a aceitar. Uma nova oferta do mesmo proponente com oferta pendente retorna a revisão atual com o saldo apurado, sem persistir os saldos nem publicar o snapshot. `draw.respond` com `accept` verdadeiro encerra em `DRAW` por `DRAW_AGREED`, e com `accept` falso apenas retira a oferta. Uma oferta pendente é descartada no lance seguinte.
 
 O relógio é autoritativo no servidor: o tempo decorrido desde a última atualização é descontado do lado da vez em toda ação. Se o tempo do lado da vez chega a zero, a partida termina por `TIMEOUT` com vitória do oponente, o estado encerrado é publicado aos inscritos e a ação que chegou atrasada é recusada com `INVALID_GAME_STATE`.
 
@@ -153,7 +153,7 @@ O relógio é autoritativo no servidor: o tempo decorrido desde a última atuali
 
 | Código | Quando ocorre |
 | --- | --- |
-| `VALIDATION_ERROR` | JSON inválido, campo obrigatório ausente, `gameId` fora do formato UUID, `uci` fora da notação UCI ou revisão inválida ou indisponível |
+| `VALIDATION_ERROR` | JSON inválido, campo obrigatório ausente, `requestId` inválido, `gameId` fora do formato UUID, `uci` fora da notação UCI ou revisão inválida ou indisponível |
 | `UNSUPPORTED_MESSAGE` | `type` não previsto neste contrato |
 | `SESSION_INVALID` | conexão sem sessão guest válida |
 | `GAME_NOT_FOUND` | partida inexistente |
